@@ -1,45 +1,46 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Package, Send, Search, Clock, Shield, ArrowRight, CheckCircle } from 'lucide-react';
+import { Package, Send, Search, Clock, Shield, ArrowRight, CheckCircle, Zap } from 'lucide-react';
 
 const Home = () => {
   return (
-    <div className="min-h-screen bg-[#f0f4f8]">
+    <div className="min-h-screen bg-black font-sans selection:bg-[#FFC000] selection:text-black">
       {/* Hero Section */}
-      <section className="relative overflow-hidden bg-gradient-to-br from-[#1e3a8a] via-blue-800 to-blue-900 text-white">
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute top-20 left-10 w-72 h-72 bg-pink-300 rounded-full blur-3xl"></div>
-          <div className="absolute bottom-10 right-20 w-96 h-96 bg-blue-400 rounded-full blur-3xl"></div>
+      <section className="relative overflow-hidden bg-black text-white border-b border-[#333333]">
+        <div className="absolute inset-0 opacity-20 pointer-events-none">
+          <div className="absolute -top-40 -left-40 w-[600px] h-[600px] bg-[#FFC000] rounded-full blur-[150px]"></div>
+          <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-[#1A1A1A] rounded-full blur-[100px]"></div>
         </div>
-        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 md:py-32">
-          <div className="max-w-3xl">
-            <div className="flex items-center gap-2 mb-6">
-              <div className="p-2 bg-pink-300 rounded-lg">
-                <Package className="w-6 h-6 text-white" />
-              </div>
-              <span className="text-2xl font-bold">InstaShipin</span>
-              <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full font-medium">Customer Portal</span>
+        
+        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 md:py-36">
+          <div className="max-w-4xl">
+            <div className="inline-flex items-center gap-2 mb-8 px-4 py-2 rounded-full bg-[#1A1A1A] border border-[#333333]">
+              <div className="w-2 h-2 rounded-full bg-[#FFC000] animate-pulse"></div>
+              <span className="text-xs font-bold text-gray-300 uppercase tracking-widest">Global Logistics Network</span>
             </div>
-            <h1 className="text-4xl md:text-6xl font-bold leading-tight mb-6">
-              Ship Smarter,<br />
-              <span className="text-pink-300">Arrive Faster.</span>
+            
+            <h1 className="text-5xl md:text-7xl font-black leading-[1.1] mb-8 tracking-tight">
+              Ship Smarter.<br />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#FFC000] to-yellow-200">Arrive Faster.</span>
             </h1>
-            <p className="text-lg md:text-xl text-blue-100 mb-8 max-w-xl">
-              Send packages anywhere with real-time tracking, reliable delivery, and transparent pricing. Your shipments, simplified.
+            
+            <p className="text-lg md:text-xl text-gray-400 mb-10 max-w-2xl leading-relaxed font-medium">
+              Premium logistics solutions for the modern world. Real-time tracking, AI-optimized routing, and transparent pricing.
             </p>
-            <div className="flex flex-col sm:flex-row gap-4">
+            
+            <div className="flex flex-col sm:flex-row gap-5">
               <Link
                 to="/register"
-                className="inline-flex items-center justify-center gap-2 px-8 py-4 bg-white text-[#1e3a8a] font-semibold rounded-xl hover:bg-blue-50 transition-all shadow-lg"
+                className="inline-flex items-center justify-center gap-3 px-8 py-4 bg-[#FFC000] text-black font-bold text-lg rounded-xl hover:bg-[#E5AC00] transition-all shadow-[0_0_20px_rgba(255,192,0,0.3)] hover:shadow-[0_0_30px_rgba(255,192,0,0.5)] transform hover:-translate-y-1"
               >
                 Get Started
-                <ArrowRight className="w-5 h-5" />
+                <ArrowRight className="w-5 h-5" strokeWidth={3} />
               </Link>
               <Link
                 to="/login"
-                className="inline-flex items-center justify-center gap-2 px-8 py-4 border-2 border-white/30 text-white font-semibold rounded-xl hover:bg-white/10 transition-all"
+                className="inline-flex items-center justify-center gap-3 px-8 py-4 bg-[#1A1A1A] text-white font-bold text-lg rounded-xl border border-[#333333] hover:border-[#FFC000] hover:text-[#FFC000] transition-all"
               >
-                Sign In
+                Track Parcel
               </Link>
             </div>
           </div>
@@ -47,88 +48,93 @@ const Home = () => {
       </section>
 
       {/* Features Section */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
-        <div className="text-center mb-16">
-          <h2 className="text-3xl md:text-4xl font-bold text-[#1e3a8a] mb-4">Why Ship With Us?</h2>
-          <p className="text-slate-500 text-lg max-w-2xl mx-auto">
-            Fast, reliable, and affordable shipping for all your needs.
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 bg-black">
+        <div className="text-center mb-20">
+          <h2 className="text-3xl md:text-5xl font-bold text-white mb-6">Why <span className="text-[#FFC000]">SmartPostal?</span></h2>
+          <p className="text-gray-400 text-lg max-w-2xl mx-auto">
+            Engineered for reliability. Designed for speed.
           </p>
         </div>
 
         <div className="grid md:grid-cols-3 gap-8">
           {[
             {
-              icon: <Send className="w-8 h-8" />,
-              title: 'Easy Booking',
-              desc: 'Book a delivery in minutes with our simple and intuitive interface.',
+              icon: <Zap className="w-6 h-6" />,
+              title: 'Instant Booking',
+              desc: 'Book a delivery in seconds with our AI-powered interface.',
             },
             {
-              icon: <Search className="w-8 h-8" />,
+              icon: <Search className="w-6 h-6" />,
               title: 'Live Tracking',
-              desc: 'Track your parcels in real-time from pickup to delivery.',
+              desc: 'Precision GPS tracking updates every 30 seconds.',
             },
             {
-              icon: <Clock className="w-8 h-8" />,
-              title: 'Fast Delivery',
-              desc: 'Same-day and next-day delivery options for your urgent shipments.',
+              icon: <Clock className="w-6 h-6" />,
+              title: 'Express Delivery',
+              desc: 'Same-day delivery options for urgent urban shipments.',
             },
             {
-              icon: <Shield className="w-8 h-8" />,
-              title: 'Safe & Secure',
-              desc: 'Your packages are insured and handled with care at every step.',
+              icon: <Shield className="w-6 h-6" />,
+              title: 'Full Insurance',
+              desc: 'Comprehensive coverage for high-value items included.',
             },
             {
-              icon: <Package className="w-8 h-8" />,
-              title: 'Shipment History',
-              desc: 'View all your past and current shipments in one convenient dashboard.',
+              icon: <Package className="w-6 h-6" />,
+              title: 'Bulk Management',
+              desc: 'Enterprise-grade tools for managing high-volume shipping.',
             },
             {
-              icon: <CheckCircle className="w-8 h-8" />,
+              icon: <CheckCircle className="w-6 h-6" />,
               title: 'Transparent Pricing',
-              desc: 'No hidden fees. Know exactly what you pay before you ship.',
+              desc: 'Upfront quotes. No hidden surcharges. Ever.',
             },
           ].map((feature, i) => (
             <div
               key={i}
-              className="bg-white rounded-2xl p-8 shadow-sm hover:shadow-lg transition-shadow border border-gray-100"
+              className="group bg-[#1A1A1A] rounded-2xl p-8 border border-[#333333] hover:border-[#FFC000] transition-all duration-300 hover:shadow-2xl"
             >
-              <div className="w-14 h-14 bg-blue-50 text-[#1e3a8a] rounded-xl flex items-center justify-center mb-5">
-                {feature.icon}
+              <div className="w-14 h-14 bg-black rounded-xl flex items-center justify-center mb-6 text-[#FFC000] border border-[#333333] group-hover:scale-110 transition-transform shadow-lg shadow-[#FFC000]/10">
+                {React.cloneElement(feature.icon, { strokeWidth: 2.5 })}
               </div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">{feature.title}</h3>
-              <p className="text-slate-500">{feature.desc}</p>
+              <h3 className="text-xl font-bold text-white mb-3 group-hover:text-[#FFC000] transition-colors">{feature.title}</h3>
+              <p className="text-gray-400 leading-relaxed">{feature.desc}</p>
             </div>
           ))}
         </div>
       </section>
 
       {/* CTA Section */}
-      <section className="bg-[#1e3a8a] text-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 text-center">
-          <h2 className="text-3xl md:text-4xl font-bold mb-4">Ready to Ship?</h2>
-          <p className="text-blue-200 text-lg mb-8 max-w-xl mx-auto">
-            Create your account and send your first parcel in minutes.
+      <section className="relative py-24 bg-[#FFC000] overflow-hidden">
+         <div className="absolute inset-0 opacity-10 pointer-events-none">
+            <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-black rounded-full blur-[80px]"></div>
+             <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-black rounded-full blur-[80px]"></div>
+         </div>
+
+        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+          <h2 className="text-4xl md:text-5xl font-black text-black mb-6 tracking-tight">Ready to Ship?</h2>
+          <p className="text-black/80 text-xl mb-10 max-w-2xl mx-auto font-bold">
+            Create your free account today and experience the future of logistics.
           </p>
           <Link
             to="/register"
-            className="inline-flex items-center gap-2 px-10 py-4 bg-white text-[#1e3a8a] font-semibold rounded-xl hover:bg-blue-50 transition-all shadow-lg"
+            className="inline-flex items-center gap-3 px-10 py-5 bg-black text-[#FFC000] font-bold text-lg rounded-xl hover:bg-gray-900 transition-all shadow-2xl hover:-translate-y-1"
           >
             Create Account
-            <ArrowRight className="w-5 h-5" />
+            <ArrowRight className="w-6 h-6" />
           </Link>
         </div>
       </section>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-gray-100">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col md:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 bg-pink-300 rounded-lg">
-              <Package className="w-4 h-4 text-white" />
+      <footer className="bg-black border-t border-[#333333]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-[#FFC000] rounded-lg">
+              <Package className="w-5 h-5 text-black" strokeWidth={2.5} />
             </div>
-            <span className="font-bold text-[#1e3a8a]">InstaShipin</span>
+            <span className="font-bold text-2xl text-white tracking-tight">Smart<span className="text-[#FFC000]">Postal</span></span>
           </div>
-          <p className="text-sm text-slate-400">&copy; 2026 InstaShipin. All rights reserved.</p>
+          <p className="text-sm text-gray-500 font-medium">&copy; 2026 SmartPostal Inc. All rights reserved.</p>
         </div>
       </footer>
     </div>

@@ -1,13 +1,15 @@
 import React from 'react';
-import { Package, Send, CheckCircle, Clock, MapPin, Search, Plus, ArrowUpRight } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Package, Send, CheckCircle, Clock, MapPin, Search, Plus, ArrowUpRight, Truck, Box } from 'lucide-react';
+
 
 const CustomerDashboard = () => {
   // Placeholder data
   const stats = [
-    { label: 'Active Shipments', value: '3', icon: <Send className="w-6 h-6" />, color: 'bg-blue-50 text-blue-600' },
-    { label: 'Delivered', value: '28', icon: <CheckCircle className="w-6 h-6" />, color: 'bg-green-50 text-green-600' },
-    { label: 'In Transit', value: '2', icon: <Clock className="w-6 h-6" />, color: 'bg-amber-50 text-amber-600' },
-    { label: 'Total Shipments', value: '33', icon: <Package className="w-6 h-6" />, color: 'bg-purple-50 text-purple-600' },
+    { label: 'Active Shipments', value: '3', icon: <Send className="w-6 h-6" />, bg: 'bg-[#FFC000]', text: 'text-black' },
+    { label: 'Delivered', value: '28', icon: <CheckCircle className="w-6 h-6" />, bg: 'bg-green-500', text: 'text-black' },
+    { label: 'In Transit', value: '2', icon: <Truck className="w-6 h-6" />, bg: 'bg-blue-500', text: 'text-white' },
+    { label: 'Total Shipments', value: '33', icon: <Box className="w-6 h-6" />, bg: 'bg-gray-700', text: 'text-white' },
   ];
 
   const recentShipments = [
@@ -19,90 +21,103 @@ const CustomerDashboard = () => {
 
   const statusColor = (status) => {
     switch (status) {
-      case 'In Transit': return 'bg-blue-100 text-blue-700';
-      case 'Delivered': return 'bg-green-100 text-green-700';
-      case 'Pending': return 'bg-amber-100 text-amber-700';
-      default: return 'bg-gray-100 text-gray-700';
+      case 'In Transit': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+      case 'Delivered': return 'bg-green-500/10 text-green-400 border-green-500/20';
+      case 'Pending': return 'bg-[#FFC000]/10 text-[#FFC000] border-[#FFC000]/20';
+      default: return 'bg-gray-800 text-gray-400 border-gray-700';
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#f0f4f8]">
+    <div className="min-h-screen bg-black font-sans selection:bg-[#FFC000] selection:text-black">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8 gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-10 gap-4">
           <div>
-            <h1 className="text-3xl font-bold text-[#1e3a8a]">My Dashboard</h1>
-            <p className="text-slate-500 mt-1">Track and manage all your shipments.</p>
+            <h1 className="text-4xl font-bold text-white tracking-tight">My Dashboard</h1>
+            <p className="text-gray-400 mt-2 text-lg">Track and manage your global shipments.</p>
           </div>
-          <button className="inline-flex items-center gap-2 px-6 py-3 bg-[#1e3a8a] text-white font-medium rounded-xl hover:bg-blue-900 transition-colors shadow-lg shadow-blue-900/20">
-            <Plus className="w-5 h-5" />
+          <Link to="/new-shipment" className="inline-flex items-center gap-2 px-6 py-3.5 bg-[#FFC000] text-black font-bold rounded-xl hover:bg-[#E5AC00] transition-all shadow-[0_0_20px_rgba(255,192,0,0.2)] hover:shadow-[0_0_30px_rgba(255,192,0,0.4)] hover:-translate-y-0.5">
+            <Plus className="w-5 h-5" strokeWidth={3} />
             New Shipment
-          </button>
+          </Link>
         </div>
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
           {stats.map((stat, i) => (
-            <div key={i} className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+            <div key={i} className="group bg-[#1A1A1A] rounded-2xl p-6 border border-[#333333] hover:border-[#FFC000]/50 transition-all duration-300">
               <div className="flex items-center justify-between mb-4">
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${stat.color}`}>
-                  {stat.icon}
+                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${stat.bg} ${stat.text} shadow-lg group-hover:scale-110 transition-transform`}>
+                  {React.cloneElement(stat.icon, { strokeWidth: 2.5 })}
                 </div>
-                <ArrowUpRight className="w-5 h-5 text-slate-300" />
+                <div className="p-1.5 bg-black rounded-lg border border-[#333333] group-hover:border-[#FFC000]/30 transition-colors">
+                    <ArrowUpRight className="w-4 h-4 text-gray-400 group-hover:text-[#FFC000]" />
+                </div>
               </div>
-              <p className="text-3xl font-bold text-slate-800">{stat.value}</p>
-              <p className="text-sm text-slate-500 mt-1">{stat.label}</p>
+              <p className="text-4xl font-bold text-white tracking-tight mb-1">{stat.value}</p>
+              <p className="text-sm text-gray-400 font-medium">{stat.label}</p>
             </div>
           ))}
         </div>
 
         {/* Track Shipment */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
-          <h2 className="text-lg font-semibold text-slate-800 mb-4">Track a Shipment</h2>
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Enter tracking number (e.g. SHP-1024)"
-                className="w-full pl-12 pr-4 py-3 border border-gray-200 rounded-xl text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-[#1e3a8a] transition-all"
-              />
+        <div className="bg-[#1A1A1A] rounded-2xl border border-[#333333] p-1 shadow-2xl mb-10">
+            <div className="bg-black/40 rounded-xl p-6 sm:p-8 backdrop-blur-sm">
+                <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                    <Search className="w-5 h-5 text-[#FFC000]" />
+                    Track a Shipment
+                </h2>
+                <div className="flex flex-col sm:flex-row gap-4">
+                    <div className="relative flex-1 group">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-[#FFC000] transition-colors" />
+                    <input
+                        type="text"
+                        placeholder="Enter tracking number (e.g. SHP-1024)"
+                        className="w-full pl-12 pr-4 py-4 bg-black border border-[#333333] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-[#FFC000] focus:ring-1 focus:ring-[#FFC000] transition-all font-medium"
+                    />
+                    </div>
+                    <button className="px-8 py-4 bg-white text-black font-bold rounded-xl hover:bg-gray-200 transition-colors shadow-lg">
+                    Track Now
+                    </button>
+                </div>
             </div>
-            <button className="px-8 py-3 bg-[#1e3a8a] text-white font-medium rounded-xl hover:bg-blue-900 transition-colors shadow-md shadow-blue-900/20">
-              Track
-            </button>
-          </div>
         </div>
 
         {/* Recent Shipments */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
-          <div className="p-6 border-b border-gray-100">
-            <h2 className="text-lg font-semibold text-slate-800">Recent Shipments</h2>
+        <div className="bg-[#1A1A1A] rounded-2xl border border-[#333333] overflow-hidden">
+          <div className="p-6 border-b border-[#333333] flex justify-between items-center">
+            <h2 className="text-lg font-bold text-white">Recent Shipments</h2>
+            <button className="text-sm font-bold text-[#FFC000] hover:text-white transition-colors">View All History</button>
           </div>
-          <div className="divide-y divide-gray-50">
+          <div className="divide-y divide-[#333333]">
             {recentShipments.map((shipment) => (
-              <div key={shipment.id} className="p-6 hover:bg-gray-50 transition-colors">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center">
-                      <Package className="w-5 h-5 text-[#1e3a8a]" />
+              <div key={shipment.id} className="p-6 hover:bg-white/5 transition-colors group cursor-pointer">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-3">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-black rounded-xl flex items-center justify-center border border-[#333333] group-hover:border-[#FFC000]/50 transition-colors">
+                      <Package className="w-6 h-6 text-[#FFC000]" strokeWidth={2} />
                     </div>
                     <div>
-                      <p className="font-semibold text-slate-800">{shipment.id}</p>
-                      <p className="text-xs text-slate-400">Booked: {shipment.date}</p>
+                      <p className="font-bold text-white text-lg">{shipment.id}</p>
+                      <p className="text-xs text-gray-500 font-mono">Booked: {shipment.date}</p>
                     </div>
                   </div>
-                  <span className={`px-3 py-1 rounded-full text-xs font-medium ${statusColor(shipment.status)}`}>
+                  <span className={`self-start sm:self-center px-3 py-1.5 rounded-lg text-xs font-bold border ${statusColor(shipment.status)} uppercase tracking-wider`}>
                     {shipment.status}
                   </span>
                 </div>
-                <div className="flex items-center justify-between mt-2">
-                  <div className="flex items-center gap-2 text-sm text-slate-500">
-                    <MapPin className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span className="truncate">{shipment.to}</span>
+                
+                <div className="pl-[64px] flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-sm text-gray-400">
+                    <MapPin className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                    <span className="group-hover:text-white transition-colors">{shipment.to}</span>
                   </div>
-                  <p className="text-xs text-slate-400">ETA: {shipment.eta}</p>
+                  <div className="flex items-center gap-2 text-sm text-gray-400 bg-black/50 px-3 py-1 rounded-lg border border-[#333333] w-fit">
+                    <Clock className="w-3.5 h-3.5 text-[#FFC000]" />
+                    <span>ETA: <span className="text-white font-medium">{shipment.eta}</span></span>
+                  </div>
                 </div>
               </div>
             ))}

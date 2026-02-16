@@ -6,6 +6,7 @@ import Login from './pages/login'; // Ensure case matches filename
 import Register from './pages/register';
 import CustomerDashboard from './pages/CustomerDashboard';
 import CustomerProfile from './pages/CustomerProfile'; // Import the new file
+import NewShipment from './components/NewShipment';
 
 function App() {
   return (
@@ -16,7 +17,8 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/dashboard" element={<CustomerDashboard />} />
-        <Route path="/profile" element={<CustomerProfile />} /> {/* Added Route */}
+        <Route path="/profile" element={<CustomerProfile />} />
+        <Route path="/new-shipment" element={<NewShipment />} />
       </Routes>
     </BrowserRouter>
   );
