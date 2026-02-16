@@ -1,14 +1,24 @@
 import React, { useState } from 'react';
 import { Package, MapPin, User, Upload, ArrowRight, ArrowLeft, CheckCircle, Camera, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { createShipment } from '../services/api';
 
 const NewShipment = () => {
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [formData, setFormData] = useState({
     senderName: '', senderPhone: '', senderAddress: '',
     receiverName: '', receiverPhone: '', receiverAddress: '',
-    packageWeight: '', packageType: 'Standard',
+    packageWeight: '', packageType: 'Standard', description: '',
     receiverImage: null // To store the uploaded image
   });
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
@@ -23,6 +33,31 @@ const NewShipment = () => {
 
   const nextStep = () => setStep(step + 1);
   const prevStep = () => setStep(step - 1);
+
+  const handleSubmit = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const payload = {
+        sender_name: formData.senderName,
+        sender_phone: formData.senderPhone,
+        pickup_address: formData.senderAddress,
+        receiver_name: formData.receiverName,
+        receiver_phone: formData.receiverPhone,
+        delivery_address: formData.receiverAddress,
+        package_weight: formData.packageWeight ? parseFloat(formData.packageWeight) : null,
+        package_type: formData.packageType,
+        description: formData.description || null,
+        image_url: formData.receiverImage || null,
+      };
+      await createShipment(payload);
+      navigate('/dashboard');
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to create shipment. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-8 font-sans selection:bg-[#FFC000] selection:text-black">
@@ -63,17 +98,17 @@ const NewShipment = () => {
               <div className="grid md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Full Name</label>
-                  <input type="text" placeholder="Your Name" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
+                  <input type="text" name="senderName" value={formData.senderName} onChange={handleChange} placeholder="Your Name" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Phone Number</label>
-                  <input type="tel" placeholder="+94 77 123 4567" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
+                  <input type="tel" name="senderPhone" value={formData.senderPhone} onChange={handleChange} placeholder="+94 77 123 4567" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
                 </div>
                 <div className="md:col-span-2 space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Pickup Address</label>
                   <div className="relative">
                     <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={20} />
-                    <input type="text" placeholder="Street address, City" className="w-full bg-black border border-[#333333] rounded-xl p-4 pl-12 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
+                    <input type="text" name="senderAddress" value={formData.senderAddress} onChange={handleChange} placeholder="Street address, City" className="w-full bg-black border border-[#333333] rounded-xl p-4 pl-12 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
                   </div>
                 </div>
               </div>
@@ -91,17 +126,17 @@ const NewShipment = () => {
               <div className="grid md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Receiver Name</label>
-                  <input type="text" placeholder="Receiver Name" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
+                  <input type="text" name="receiverName" value={formData.receiverName} onChange={handleChange} placeholder="Receiver Name" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Receiver Phone</label>
-                  <input type="tel" placeholder="+94 77 123 4567" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
+                  <input type="tel" name="receiverPhone" value={formData.receiverPhone} onChange={handleChange} placeholder="+94 77 123 4567" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
                 </div>
                 <div className="md:col-span-2 space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Delivery Address</label>
                   <div className="relative">
                     <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={20} />
-                    <input type="text" placeholder="Street address, City" className="w-full bg-black border border-[#333333] rounded-xl p-4 pl-12 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
+                    <input type="text" name="receiverAddress" value={formData.receiverAddress} onChange={handleChange} placeholder="Street address, City" className="w-full bg-black border border-[#333333] rounded-xl p-4 pl-12 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
                   </div>
                 </div>
               </div>
@@ -119,11 +154,11 @@ const NewShipment = () => {
               <div className="grid md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Weight (kg)</label>
-                  <input type="number" placeholder="0.5" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
+                  <input type="number" name="packageWeight" value={formData.packageWeight} onChange={handleChange} placeholder="0.5" className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Type</label>
-                  <select className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors">
+                  <select name="packageType" value={formData.packageType} onChange={handleChange} className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors">
                     <option>Standard</option>
                     <option>Fragile</option>
                     <option>Electronics</option>
@@ -132,7 +167,7 @@ const NewShipment = () => {
                 </div>
                 <div className="md:col-span-2 space-y-2">
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Description</label>
-                  <textarea rows="3" placeholder="Brief description of contents..." className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors resize-none"></textarea>
+                  <textarea rows="3" name="description" value={formData.description} onChange={handleChange} placeholder="Brief description of contents..." className="w-full bg-black border border-[#333333] rounded-xl p-4 text-white focus:border-[#FFC000] focus:outline-none transition-colors resize-none"></textarea>
                 </div>
               </div>
             </div>
@@ -206,10 +241,15 @@ const NewShipment = () => {
               </button>
             ) : (
               <button 
-                className="px-8 py-3 bg-green-500 text-black font-bold rounded-xl hover:bg-green-400 transition-colors shadow-lg shadow-green-500/20 flex items-center gap-2"
+                onClick={handleSubmit}
+                disabled={loading}
+                className="px-8 py-3 bg-green-500 text-black font-bold rounded-xl hover:bg-green-400 transition-colors shadow-lg shadow-green-500/20 flex items-center gap-2 disabled:opacity-50"
               >
-                Confirm Shipment <CheckCircle size={20} />
+                {loading ? 'Creating...' : 'Confirm Shipment'} <CheckCircle size={20} />
               </button>
+            )}
+            {error && (
+              <p className="text-red-400 text-sm mt-2">{error}</p>
             )}
           </div>
 

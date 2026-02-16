@@ -1,25 +1,55 @@
 import React, { useState, useEffect } from 'react';
 import { Package, MapPin, User, Upload, Save, ArrowLeft, Camera, X, AlertCircle, Info, Lock } from 'lucide-react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
+import { getShipmentById, updateShipment } from '../services/api';
 
 const EditShipment = () => {
-  const { id } = useParams(); // Start by assuming we're editing a specific shipment ID
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
 
-  // Mock initial data - In a real app, you'd fetch this using the ID
   const [shipment, setShipment] = useState({
-    id: 'SHP-1024',
-    status: 'In Transit',
-    sender: { name: 'John Doe', phone: '+94 77 123 4567', address: '123 Main St, Colombo' },
-    receiver: { name: 'Jane Smith', phone: '+94 71 987 6543', address: '456 Oak Ave, Kandy' },
-    package: { weight: '2.5', type: 'Electronics', description: 'Laptop and charger' },
+    id: '',
+    tracking_number: '',
+    status: '',
+    sender: { name: '', phone: '', address: '' },
+    receiver: { name: '', phone: '', address: '' },
+    package: { weight: '', type: '', description: '' },
     verification: {
-      method: 'Neighbor', // Could be 'Owner', 'Neighbor', 'FrontDoor'
-      image: null // null implies no image was added initially
+      method: 'Neighbor',
+      image: null
     }
   });
 
   const [newImage, setNewImage] = useState(null);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    const fetchShipment = async () => {
+      try {
+        const res = await getShipmentById(id);
+        const s = res.data;
+        setShipment({
+          id: s.tracking_number,
+          tracking_number: s.tracking_number,
+          status: s.status,
+          sender: { name: s.sender_name || '', phone: s.sender_phone || '', address: s.pickup_address || '' },
+          receiver: { name: s.receiver_name || '', phone: s.receiver_phone || '', address: s.delivery_address || '' },
+          package: { weight: s.package_weight ? String(s.package_weight) : '', type: s.package_type || '', description: s.description || '' },
+          verification: {
+            method: 'Neighbor',
+            image: s.image_url || null
+          }
+        });
+      } catch (err) {
+        setError('Failed to load shipment details.');
+        if (err.response?.status === 401) navigate('/login');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchShipment();
+  }, [id, navigate]);
 
   // Determine if image upload is allowed
   // Rule: Can add ONLY if method is 'Neighbor' OR if no image exists yet.
@@ -44,11 +74,22 @@ const EditShipment = () => {
     setError('');
   };
 
-  const handleSave = () => {
-    // Logic to save the new image to the backend would go here
-    console.log("Saving new verification image:", newImage);
-    alert("Order updated successfully!");
+  const handleSave = async () => {
+    try {
+      await updateShipment(id, { image_url: newImage });
+      navigate('/dashboard');
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to update shipment.');
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+        <p className="text-gray-400">Loading shipment details...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-8 font-sans selection:bg-[#FFC000] selection:text-black">

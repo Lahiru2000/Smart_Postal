@@ -1,8 +1,34 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Package, Eye, Zap, Shield, TrendingUp } from 'lucide-react';
+import { loginUser } from '../services/api';
 
 const Login = () => {
+  const navigate = useNavigate();
+  const [formData, setFormData] = useState({ email: '', password: '' });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleChange = (e) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const res = await loginUser({ ...formData, role: 'courier' });
+      localStorage.setItem('token', res.data.access_token);
+      localStorage.setItem('role', res.data.role);
+      navigate('/dashboard');
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Login failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-black p-4 font-sans selection:bg-[#FFC000] selection:text-black">
       <div className="max-w-6xl w-full bg-[#1A1A1A] rounded-[2rem] shadow-2xl overflow-hidden flex flex-col md:flex-row border border-[#333333]">
@@ -58,7 +84,12 @@ const Login = () => {
             <p className="text-gray-400 font-medium">Sign in to access your courier dashboard.</p>
           </div>
 
-          <form className="space-y-6">
+          <form className="space-y-6" onSubmit={handleSubmit}>
+            {error && (
+              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm font-medium">
+                {error}
+              </div>
+            )}
             <div>
               <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2.5">Email Address</label>
               <div className="relative group">
@@ -67,8 +98,12 @@ const Login = () => {
                 </div>
                 <input
                   type="email"
+                  name="email"
+                  value={formData.email}
+                  onChange={handleChange}
                   placeholder="name@example.com"
                   className="w-full pl-12 pr-4 py-4 bg-black border border-[#333333] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-[#FFC000] focus:ring-1 focus:ring-[#FFC000] transition-all font-medium"
+                  required
                 />
               </div>
             </div>
@@ -81,8 +116,12 @@ const Login = () => {
                 </div>
                 <input
                   type="password"
+                  name="password"
+                  value={formData.password}
+                  onChange={handleChange}
                   placeholder="••••••••"
                   className="w-full pl-12 pr-12 py-4 bg-black border border-[#333333] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-[#FFC000] focus:ring-1 focus:ring-[#FFC000] transition-all font-medium"
+                  required
                 />
                 <button type="button" className="absolute inset-y-0 right-0 pr-4 flex items-center">
                   <Eye className="h-5 w-5 text-gray-600 hover:text-gray-300 transition-colors" />
@@ -105,10 +144,11 @@ const Login = () => {
 
             <button 
               type="submit"
-              className="w-full px-8 py-4 bg-[#FFC000] hover:bg-[#E5AC00] text-black font-bold text-lg rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-[#FFC000]/20 hover:shadow-[#FFC000]/40 transform hover:-translate-y-0.5"
+              disabled={loading}
+              className="w-full px-8 py-4 bg-[#FFC000] hover:bg-[#E5AC00] text-black font-bold text-lg rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-[#FFC000]/20 hover:shadow-[#FFC000]/40 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Sign In
-              <ArrowRight className="w-5 h-5" strokeWidth={2.5} />
+              {loading ? 'Signing In...' : 'Sign In'}
+              {!loading && <ArrowRight className="w-5 h-5" strokeWidth={2.5} />}
             </button>
           </form>
 

@@ -1,8 +1,39 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, User, ArrowRight, Package } from 'lucide-react';
+import { registerUser } from '../services/api';
 
 const Register = () => {
+  const navigate = useNavigate();
+  const [formData, setFormData] = useState({
+    full_name: '', email: '', phone: '', password: '', confirmPassword: '', role: 'customer'
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleChange = (e) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (formData.password !== formData.confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+    setLoading(true);
+    try {
+      const { confirmPassword, ...payload } = formData;
+      await registerUser(payload);
+      navigate('/login');
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Registration failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-black p-4 font-sans selection:bg-[#FFC000] selection:text-black">
       <div className="max-w-5xl w-full bg-[#1A1A1A] rounded-[2rem] shadow-2xl overflow-hidden flex flex-col md:flex-row border border-[#333333]">
@@ -30,7 +61,12 @@ const Register = () => {
             <p className="text-gray-400">Join thousands of customers shipping smarter</p>
           </div>
 
-          <form className="space-y-4">
+          <form className="space-y-4" onSubmit={handleSubmit}>
+            {error && (
+              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm font-medium">
+                {error}
+              </div>
+            )}
             <div>
                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Full Name</label>
               <div className="relative group">
@@ -39,8 +75,12 @@ const Register = () => {
                 </div>
                 <input
                   type="text"
+                  name="full_name"
+                  value={formData.full_name}
+                  onChange={handleChange}
                   placeholder="e.g. John Doe"
                   className="w-full pl-12 pr-4 py-3.5 bg-black border border-[#333333] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-[#FFC000] focus:ring-1 focus:ring-[#FFC000] transition-all font-medium"
+                  required
                 />
               </div>
             </div>
@@ -53,8 +93,30 @@ const Register = () => {
                 </div>
                 <input
                   type="email"
+                  name="email"
+                  value={formData.email}
+                  onChange={handleChange}
                   placeholder="name@example.com"
                   className="w-full pl-12 pr-4 py-3.5 bg-black border border-[#333333] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-[#FFC000] focus:ring-1 focus:ring-[#FFC000] transition-all font-medium"
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Phone Number</label>
+              <div className="relative group">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                  <User className="h-5 w-5 text-gray-500 group-focus-within:text-[#FFC000] transition-colors" />
+                </div>
+                <input
+                  type="tel"
+                  name="phone"
+                  value={formData.phone}
+                  onChange={handleChange}
+                  placeholder="+94 77 123 4567"
+                  className="w-full pl-12 pr-4 py-3.5 bg-black border border-[#333333] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-[#FFC000] focus:ring-1 focus:ring-[#FFC000] transition-all font-medium"
+                  required
                 />
               </div>
             </div>
@@ -68,8 +130,12 @@ const Register = () => {
                     </div>
                     <input
                       type="password"
+                      name="password"
+                      value={formData.password}
+                      onChange={handleChange}
                       placeholder="••••••••"
                       className="w-full pl-12 pr-4 py-3.5 bg-black border border-[#333333] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-[#FFC000] focus:ring-1 focus:ring-[#FFC000] transition-all font-medium"
+                      required
                     />
                   </div>
                 </div>
@@ -81,8 +147,12 @@ const Register = () => {
                     </div>
                     <input
                       type="password"
+                      name="confirmPassword"
+                      value={formData.confirmPassword}
+                      onChange={handleChange}
                       placeholder="••••••••"
                       className="w-full pl-12 pr-4 py-3.5 bg-black border border-[#333333] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-[#FFC000] focus:ring-1 focus:ring-[#FFC000] transition-all font-medium"
+                      required
                     />
                   </div>
                 </div>
@@ -90,10 +160,11 @@ const Register = () => {
 
             <button 
               type="submit"
-              className="w-full px-8 py-4 bg-[#FFC000] hover:bg-[#E5AC00] text-black font-bold text-lg rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-[#FFC000]/20 hover:-translate-y-0.5 mt-2"
+              disabled={loading}
+              className="w-full px-8 py-4 bg-[#FFC000] hover:bg-[#E5AC00] text-black font-bold text-lg rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-[#FFC000]/20 hover:-translate-y-0.5 mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Sign Up
-              <ArrowRight className="w-5 h-5" strokeWidth={2.5} />
+              {loading ? 'Creating Account...' : 'Sign Up'}
+              {!loading && <ArrowRight className="w-5 h-5" strokeWidth={2.5} />}
             </button>
           </form>
 

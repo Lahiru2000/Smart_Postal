@@ -1,42 +1,71 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Package, Truck, CheckCircle, Clock, MapPin, TrendingUp, Star, ArrowUpRight, Zap, Calendar } from 'lucide-react';
+import { getShipments, updateShipment } from '../services/api';
 
 const CourierDashboard = () => {
+  const navigate = useNavigate();
+  const [shipments, setShipments] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchShipments();
+  }, []);
+
+  const fetchShipments = async () => {
+    try {
+      const res = await getShipments();
+      setShipments(res.data);
+    } catch (err) {
+      console.error('Failed to fetch shipments', err);
+      if (err.response?.status === 401) navigate('/login');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAccept = async (id) => {
+    try {
+      await updateShipment(id, { status: 'In Transit' });
+      fetchShipments();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to accept shipment');
+    }
+  };
+
+  const handleDeliver = async (id) => {
+    try {
+      await updateShipment(id, { status: 'Delivered' });
+      fetchShipments();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to mark as delivered');
+    }
+  };
+
+  // Compute stats from real data
+  const activeCount = shipments.filter(s => s.status === 'In Transit' && s.courier_id).length;
+  const deliveredCount = shipments.filter(s => s.status === 'Delivered').length;
+  const pendingCount = shipments.filter(s => s.status === 'Pending').length;
+
   const stats = [
     { 
       label: 'Active Deliveries', 
-      value: '5', 
+      value: String(activeCount), 
       icon: <Truck className="w-6 h-6" strokeWidth={2.5} />, 
-      trend: '+12%',
-      bg: 'bg-[#FFC000]' // Updated Yellow
+      bg: 'bg-[#FFC000]'
     },
     { 
-      label: 'Completed Today', 
-      value: '12', 
+      label: 'Completed', 
+      value: String(deliveredCount), 
       icon: <CheckCircle className="w-6 h-6" strokeWidth={2.5} />, 
-      trend: '+8%',
       bg: 'bg-green-500'
     },
     { 
       label: 'Pending Pickup', 
-      value: '3', 
+      value: String(pendingCount), 
       icon: <Clock className="w-6 h-6" strokeWidth={2.5} />, 
-      trend: '-3%',
       bg: 'bg-orange-500'
     },
-    { 
-      label: 'Total Earnings', 
-      value: 'Rs. 12,500', 
-      icon: <TrendingUp className="w-6 h-6" strokeWidth={2.5} />, 
-      trend: '+18%',
-      bg: 'bg-[#FFC000]' // Updated Yellow
-    },
-  ];
-
-  const recentDeliveries = [
-    { id: 'PKG-2341', from: '123 Galle Road, Colombo', to: '456 Kandy Road, Peradeniya', status: 'In Transit', time: '10 min ago', priority: 'high' },
-    { id: 'PKG-2340', from: '789 Temple St, Nugegoda', to: '321 Lake Drive, Battaramulla', status: 'Delivered', time: '45 min ago', priority: 'normal' },
-    { id: 'PKG-2339', from: '555 Beach Rd, Mount Lavinia', to: '888 Hill St, Malabe', status: 'Delivered', time: '1 hr ago', priority: 'normal' },
   ];
 
   const statusStyles = {
@@ -67,16 +96,13 @@ const CourierDashboard = () => {
         </div>
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
           {stats.map((stat, i) => (
             <div key={i} className="group bg-[#1A1A1A] rounded-2xl p-6 border border-[#333333] hover:border-[#FFC000] transition-all duration-300 shadow-xl">
               <div className="flex items-start justify-between mb-4">
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${stat.bg} text-black shadow-lg shadow-${stat.bg}/20 group-hover:scale-110 transition-transform`}>
+                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${stat.bg} text-black shadow-lg group-hover:scale-110 transition-transform`}>
                   {stat.icon}
                 </div>
-                <span className="text-xs font-bold px-2 py-1 rounded-lg bg-gray-800 border border-gray-700 text-gray-300">
-                  {stat.trend}
-                </span>
               </div>
               <p className="text-3xl font-bold text-white mb-1 tracking-tight">{stat.value}</p>
               <p className="text-sm text-gray-500 font-medium">{stat.label}</p>
@@ -88,11 +114,15 @@ const CourierDashboard = () => {
           {/* Recent Deliveries */}
           <div className="lg:col-span-2 bg-[#1A1A1A] rounded-2xl border border-[#333333] overflow-hidden">
             <div className="p-6 border-b border-[#333333] flex justify-between items-center">
-              <h2 className="text-lg font-bold text-white">Recent Activity</h2>
-              <button className="text-sm font-bold text-[#FFC000] hover:text-[#FFD700] transition-colors">See All</button>
+              <h2 className="text-lg font-bold text-white">Shipments</h2>
             </div>
+            {loading ? (
+              <div className="p-12 text-center text-gray-400">Loading shipments...</div>
+            ) : shipments.length === 0 ? (
+              <div className="p-12 text-center text-gray-400">No shipments available.</div>
+            ) : (
             <div className="divide-y divide-[#333333]">
-              {recentDeliveries.map((delivery) => (
+              {shipments.map((delivery) => (
                 <div key={delivery.id} className="p-5 hover:bg-white/5 transition-colors">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">
@@ -100,27 +130,40 @@ const CourierDashboard = () => {
                         <Package className="w-5 h-5" />
                       </div>
                       <div>
-                        <p className="font-bold text-white text-sm">{delivery.id}</p>
-                        <p className="text-xs text-gray-500">{delivery.time}</p>
+                        <p className="font-bold text-white text-sm">{delivery.tracking_number}</p>
+                        <p className="text-xs text-gray-500">{new Date(delivery.created_at).toLocaleDateString()}</p>
                       </div>
                     </div>
-                    <span className={`px-2.5 py-1 rounded-md text-xs font-bold border ${statusStyles[delivery.status]}`}>
-                        {delivery.status}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2.5 py-1 rounded-md text-xs font-bold border ${statusStyles[delivery.status] || 'bg-gray-800 text-gray-400'}`}>
+                          {delivery.status}
+                      </span>
+                      {delivery.status === 'Pending' && (
+                        <button onClick={() => handleAccept(delivery.id)} className="px-3 py-1 bg-[#FFC000] text-black text-xs font-bold rounded-lg hover:bg-[#E5AC00] transition-colors">
+                          Accept
+                        </button>
+                      )}
+                      {delivery.status === 'In Transit' && delivery.courier_id && (
+                        <button onClick={() => handleDeliver(delivery.id)} className="px-3 py-1 bg-green-500 text-black text-xs font-bold rounded-lg hover:bg-green-400 transition-colors">
+                          Delivered
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="pl-12 space-y-2">
                      <div className="flex items-center gap-2 text-sm text-gray-400">
                         <div className="w-1.5 h-1.5 rounded-full bg-gray-600"></div>
-                        <span className="truncate">{delivery.from}</span>
+                        <span className="truncate">{delivery.pickup_address}</span>
                      </div>
                      <div className="flex items-center gap-2 text-sm text-gray-400">
                         <div className="w-1.5 h-1.5 rounded-full bg-[#FFC000]"></div>
-                        <span className="truncate text-gray-200">{delivery.to}</span>
+                        <span className="truncate text-gray-200">{delivery.delivery_address}</span>
                      </div>
                   </div>
                 </div>
               ))}
             </div>
+            )}
           </div>
 
           {/* Quick Actions & Profile */}

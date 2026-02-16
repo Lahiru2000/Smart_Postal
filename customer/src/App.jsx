@@ -7,6 +7,7 @@ import Register from './pages/register';
 import CustomerDashboard from './pages/CustomerDashboard';
 import CustomerProfile from './pages/CustomerProfile'; // Import the new file
 import NewShipment from './components/NewShipment';
+import EditShipment from './components/EditShipment';
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
         <Route path="/dashboard" element={<CustomerDashboard />} />
         <Route path="/profile" element={<CustomerProfile />} />
         <Route path="/new-shipment" element={<NewShipment />} />
+        <Route path="/edit-shipment/:id" element={<EditShipment />} />
       </Routes>
     </BrowserRouter>
   );
