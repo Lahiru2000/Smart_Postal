@@ -27,4 +27,10 @@ export const getShipments = () => api.get('/shipments/');
 export const getShipmentById = (id) => api.get(`/shipments/${id}`);
 export const updateShipment = (id, data) => api.put(`/shipments/${id}`, data);
 
+// Voice Verification APIs
+export const startVoiceVerification = (shipmentId) =>
+  api.post('/voice-auth/verification/start', { shipment_id: shipmentId });
+export const getVerificationStatus = (verificationId) =>
+  api.get(`/voice-auth/verification/${verificationId}/status`);
+
 export default api;

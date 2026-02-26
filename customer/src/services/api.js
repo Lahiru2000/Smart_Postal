@@ -30,4 +30,24 @@ export const trackShipment = (trackingNumber) => api.get(`/shipments/track/${tra
 export const updateShipment = (id, data) => api.put(`/shipments/${id}`, data);
 export const deleteShipment = (id) => api.delete(`/shipments/${id}`);
 
+// Voice Auth APIs
+export const getEnrollmentStatus = () => api.get('/voice-auth/enrollment/status');
+export const startEnrollment = () => api.post('/voice-auth/enrollment/start');
+export const submitEnrollmentSample = (enrollmentId, audioFile) => {
+  const formData = new FormData();
+  formData.append('audio', audioFile);
+  return api.post(`/voice-auth/enrollment/${enrollmentId}/sample`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+export const getVerificationStatus = (verificationId) =>
+  api.get(`/voice-auth/verification/${verificationId}/status`);
+export const submitVerification = (verificationId, audioFile) => {
+  const formData = new FormData();
+  formData.append('audio', audioFile);
+  return api.post(`/voice-auth/verification/${verificationId}/submit`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+
 export default api;
