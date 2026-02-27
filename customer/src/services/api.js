@@ -33,6 +33,7 @@ export const deleteShipment = (id) => api.delete(`/shipments/${id}`);
 // Voice Auth APIs
 export const getEnrollmentStatus = () => api.get('/voice-auth/enrollment/status');
 export const startEnrollment = () => api.post('/voice-auth/enrollment/start');
+export const resetVoiceProfile = () => api.delete('/voice-auth/enrollment/reset');
 export const submitEnrollmentSample = (enrollmentId, audioFile) => {
   const formData = new FormData();
   formData.append('audio', audioFile);

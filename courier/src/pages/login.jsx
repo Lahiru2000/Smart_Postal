@@ -23,7 +23,14 @@ const Login = () => {
       localStorage.setItem('role', res.data.role);
       navigate('/dashboard');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Login failed. Please try again.');
+      const detail = err.response?.data?.detail;
+      if (typeof detail === 'string') {
+        setError(detail);
+      } else if (Array.isArray(detail)) {
+        setError(detail.map(e => e.msg || JSON.stringify(e)).join(', '));
+      } else {
+        setError('Login failed. Please try again.');
+      }
     } finally {
       setLoading(false);
     }

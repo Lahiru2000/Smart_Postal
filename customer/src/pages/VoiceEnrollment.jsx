@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Mic, MicOff, CheckCircle, XCircle, Shield, AlertTriangle, ArrowRight, Volume2 } from 'lucide-react';
-import { getEnrollmentStatus, startEnrollment, submitEnrollmentSample } from '../services/api';
+import { getEnrollmentStatus, startEnrollment, submitEnrollmentSample, resetVoiceProfile } from '../services/api';
 
 const VoiceEnrollment = () => {
   const navigate = useNavigate();
@@ -52,12 +52,32 @@ const VoiceEnrollment = () => {
       setVerifiedSamples(0);
       setRequiredSamples(res.data.required_samples);
       setStatus('pending');
+      setEnrolled(false);
       setMessage('Enrollment started! Record your first voice sample.');
       setMessageType('info');
     } catch (err) {
       setMessage(err.response?.data?.detail || 'Failed to start enrollment');
       setMessageType('error');
     }
+  };
+
+  const handleReEnroll = async () => {
+    if (!window.confirm('This will replace your current voice profile. You will need to submit 3 new voice samples. Continue?')) return;
+    try {
+      await resetVoiceProfile();
+    } catch (err) {
+      // Ignore if no active profile — backend may have already deactivated it
+      if (err.response?.status !== 400) {
+        setMessage(err.response?.data?.detail || 'Failed to reset voice profile');
+        setMessageType('error');
+        return;
+      }
+    }
+    setEnrolled(false);
+    setStatus(null);
+    setVerifiedSamples(0);
+    setMessage('');
+    await handleStartEnrollment();
   };
 
   const startRecording = async () => {
@@ -180,6 +200,12 @@ const VoiceEnrollment = () => {
               className="mt-6 w-full py-3 bg-[#FFC000] text-black font-bold rounded-xl hover:bg-[#E5AC00] transition-colors flex items-center justify-center gap-2"
             >
               Back to Dashboard <ArrowRight size={18} />
+            </button>
+            <button
+              onClick={handleReEnroll}
+              className="mt-3 w-full py-3 bg-[#333333] text-gray-300 font-bold rounded-xl hover:bg-[#444444] transition-colors text-sm"
+            >
+              Re-enroll Voice Profile
             </button>
           </div>
         )}

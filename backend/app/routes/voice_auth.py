@@ -30,11 +30,12 @@ from app.schemas.voice_auth import (
 from app.services.auth import get_current_user
 from app.services.voice_pipeline import analyze_voice_sample
 from app.services.replay_guard import replay_guard
-from app.services.speaker_verification import (
-    build_voice_vector,
-    compare_samples,
+from app.services.speaker_encoder import (
+    extract_speaker_embedding,
+    compare_enrollment_samples,
     verify_speaker,
     centroid,
+    SPEAKER_EMBEDDING_DIM,
 )
 from app.services.audio_utils import validate_upload
 from app.services.voice_config import (
@@ -101,6 +102,36 @@ def get_enrollment_status(
     }
 
 
+@router.delete("/enrollment/reset")
+def reset_voice_enrollment(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Deactivate the current voice profile so the customer can re-enroll."""
+    if current_user.role != UserRole.CUSTOMER:
+        raise HTTPException(status_code=403, detail="Only customers can reset voice enrollment")
+
+    profile = db.query(VoiceProfile).filter(
+        VoiceProfile.user_id == current_user.id,
+        VoiceProfile.is_active == True,
+    ).first()
+    if not profile:
+        raise HTTPException(status_code=400, detail="No active voice profile found")
+
+    profile.is_active = False
+    current_user.voice_enrolled = False
+
+    # Cancel any pending enrollments
+    db.query(VoiceEnrollment).filter(
+        VoiceEnrollment.user_id == current_user.id,
+        VoiceEnrollment.status == "pending",
+    ).update({"status": "denied", "denied_reason": "Profile reset by user"})
+
+    db.commit()
+    logger.info(f"Voice profile deactivated for user {current_user.id}")
+    return {"status": "success", "message": "Voice profile has been reset. You can now re-enroll."}
+
+
 @router.post("/enrollment/start", response_model=EnrollmentStartResponse)
 def start_enrollment(
     db: Session = Depends(get_db),
@@ -116,7 +147,22 @@ def start_enrollment(
         VoiceProfile.is_active == True,
     ).first()
     if existing_profile:
-        raise HTTPException(status_code=400, detail="Already enrolled for voice authentication")
+        # Allow re-enrollment if profile has an outdated vector format
+        # (old profiles used 8-dim spectral/prosodic vectors instead of 256-dim Resemblyzer embeddings)
+        if (
+            existing_profile.voice_vector
+            and len(existing_profile.voice_vector) == SPEAKER_EMBEDDING_DIM
+        ):
+            raise HTTPException(status_code=400, detail="Already enrolled for voice authentication")
+        else:
+            logger.info(
+                f"Deactivating outdated voice profile for user {current_user.id} "
+                f"(dim={len(existing_profile.voice_vector) if existing_profile.voice_vector else 0}, "
+                f"expected={SPEAKER_EMBEDDING_DIM}) to allow re-enrollment"
+            )
+            existing_profile.is_active = False
+            current_user.voice_enrolled = False
+            db.commit()
 
     # Cancel any existing pending enrollment
     db.query(VoiceEnrollment).filter(
@@ -224,10 +270,8 @@ async def submit_enrollment_sample(
             detail="AI-generated or suspicious voice detected. Enrollment denied.",
         )
 
-    # Build voice vector for speaker matching
-    spectral = analysis.get("analysis_details", {}).get("spectral", {})
-    prosodic = analysis.get("analysis_details", {}).get("prosodic", {})
-    voice_vector = build_voice_vector(spectral, prosodic)
+    # Extract speaker embedding using Resemblyzer (256-dim neural speaker identity)
+    voice_vector = await extract_speaker_embedding(audio_bytes, audio.filename or "audio.mp3")
 
     # Cross-sample speaker verification (from sample 2 onwards)
     existing_samples = (
@@ -242,10 +286,11 @@ async def submit_enrollment_sample(
         s.analysis_details.get("voice_vector", [])
         for s in existing_samples
         if s.analysis_details and "voice_vector" in s.analysis_details
+        and len(s.analysis_details.get("voice_vector", [])) == SPEAKER_EMBEDDING_DIM
     ]
 
     if existing_vectors:
-        speaker_match = compare_samples(voice_vector, existing_vectors)
+        speaker_match = compare_enrollment_samples(voice_vector, existing_vectors)
         if not speaker_match["match"]:
             enrollment.status = "denied"
             enrollment.denied_reason = "Speaker mismatch across enrollment samples"
@@ -481,11 +526,22 @@ async def complete_delivery_verification(
             "analysis": analysis,
         }
 
-    # Speaker verification — compare with enrolled profile
-    spectral = analysis.get("analysis_details", {}).get("spectral", {})
-    prosodic = analysis.get("analysis_details", {}).get("prosodic", {})
-    verification_vector = build_voice_vector(spectral, prosodic)
+    # Speaker verification — compare with enrolled profile using Resemblyzer embeddings
+    verification_vector = await extract_speaker_embedding(audio_bytes, audio.filename or "audio.mp3")
     profile_vector = profile.voice_vector or []
+
+    # Check for outdated profile vector format
+    if not profile_vector or len(profile_vector) != SPEAKER_EMBEDDING_DIM:
+        verification.status = "failed"
+        verification.delivery_approved = False
+        verification.analysis_details = {"failure_reason": "profile_needs_reenrollment"}
+        verification.completed_at = datetime.utcnow()
+        _update_shipment_voice_status(db, verification.shipment_id, "failed")
+        db.commit()
+        raise HTTPException(
+            status_code=400,
+            detail="Customer's voice profile uses an outdated format. Please re-enroll for voice authentication.",
+        )
 
     speaker_result = verify_speaker(verification_vector, profile_vector)
 

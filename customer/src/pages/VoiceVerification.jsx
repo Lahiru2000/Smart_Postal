@@ -165,12 +165,22 @@ const VoiceVerification = () => {
             <XCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
             <h2 className="text-xl font-bold text-red-400 mb-2">Verification Failed</h2>
             <p className="text-gray-400 text-sm">{message}</p>
-            <button
-              onClick={() => navigate('/dashboard')}
-              className="mt-6 px-8 py-3 bg-[#333333] text-white font-bold rounded-xl hover:bg-[#444444] transition-colors"
-            >
-              Back to Dashboard
-            </button>
+            <div className="mt-6 flex flex-col gap-3">
+              {message && message.toLowerCase().includes('re-enroll') && (
+                <button
+                  onClick={() => navigate('/voice-enrollment')}
+                  className="px-8 py-3 bg-[#FFC000] text-black font-bold rounded-xl hover:bg-[#E5AC00] transition-colors"
+                >
+                  Re-enroll Voice
+                </button>
+              )}
+              <button
+                onClick={() => navigate('/dashboard')}
+                className="px-8 py-3 bg-[#333333] text-white font-bold rounded-xl hover:bg-[#444444] transition-colors"
+              >
+                Back to Dashboard
+              </button>
+            </div>
           </div>
         )}
 
