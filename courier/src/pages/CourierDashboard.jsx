@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Package, Truck, CheckCircle, Clock, Zap, Calendar, Shield, Send, X, Copy, RefreshCw, ExternalLink, CheckCheck } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Package, Truck, CheckCircle, Clock, Zap, Calendar, Shield, Send, X, Copy, RefreshCw, ExternalLink, CheckCheck, Navigation } from 'lucide-react';
 import { getShipments, updateShipment, startVoiceVerification, getVerificationStatus } from '../services/api';
 
 const CourierDashboard = () => {
@@ -293,6 +293,10 @@ const CourierDashboard = () => {
                 <button className="w-full py-3 bg-black/10 text-black rounded-xl font-bold text-sm hover:bg-black/20 transition-colors">
                     Vehicle Settings
                 </button>
+                <Link to="/route-optimizer" className="w-full py-3 bg-black text-[#FFC000] rounded-xl font-bold text-sm hover:bg-gray-900 transition-colors shadow-lg flex items-center justify-center gap-2">
+                    <Navigation className="w-4 h-4" />
+                    Route Optimizer
+                </Link>
               </div>
             </div>
 
