@@ -64,8 +64,12 @@ const EditShipment = () => {
         setError('File size too large. Max 5MB.');
         return;
       }
-      setNewImage(URL.createObjectURL(file));
-      setError('');
+      const reader = new FileReader();
+      reader.onload = () => {
+        setNewImage(reader.result);
+        setError('');
+      };
+      reader.readAsDataURL(file);
     }
   };
 

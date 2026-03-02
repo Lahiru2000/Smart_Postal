@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Package, Send, CheckCircle, Clock, MapPin, Search, Plus, ArrowUpRight, Truck, Box, Trash2 } from 'lucide-react';
-import { getShipments, deleteShipment, trackShipment } from '../services/api';
+import { Package, Send, CheckCircle, Clock, MapPin, Search, Plus, ArrowUpRight, Truck, Box, Trash2, Video, Phone, Shield } from 'lucide-react';
+import { getShipments, deleteShipment, trackShipment, getPendingCalls, initiateCall, getMyPendingVerificationLinks } from '../services/api';
 
 
 const CustomerDashboard = () => {
@@ -10,9 +10,14 @@ const CustomerDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [trackingInput, setTrackingInput] = useState('');
   const [trackError, setTrackError] = useState('');
+  const [pendingCalls, setPendingCalls] = useState([]);
+  const [asyncLinks, setAsyncLinks] = useState([]);
+  const fullName = localStorage.getItem('fullName') || 'Customer';
 
   useEffect(() => {
     fetchShipments();
+    fetchPendingCalls();
+    fetchAsyncLinks();
   }, []);
 
   const fetchShipments = async () => {
@@ -27,6 +32,24 @@ const CustomerDashboard = () => {
     }
   };
 
+  const fetchPendingCalls = async () => {
+    try {
+      const res = await getPendingCalls();
+      setPendingCalls(res.data);
+    } catch (err) {
+      console.error('Failed to fetch pending calls', err);
+    }
+  };
+
+  const fetchAsyncLinks = async () => {
+    try {
+      const res = await getMyPendingVerificationLinks();
+      setAsyncLinks(res.data || []);
+    } catch (err) {
+      console.error('Failed to fetch async verification links', err);
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!window.confirm('Are you sure you want to delete this shipment?')) return;
     try {
@@ -34,6 +57,15 @@ const CustomerDashboard = () => {
       setShipments(shipments.filter(s => s.id !== id));
     } catch (err) {
       alert(err.response?.data?.detail || 'Failed to delete shipment');
+    }
+  };
+
+  const handleCall = async (shipmentId) => {
+    try {
+      const res = await initiateCall(shipmentId);
+      navigate(`/video-call/${res.data.session_token}`);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to start call');
     }
   };
 
@@ -67,6 +99,13 @@ const CustomerDashboard = () => {
       case 'In Transit': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
       case 'Delivered': return 'bg-green-500/10 text-green-400 border-green-500/20';
       case 'Pending': return 'bg-[#FFC000]/10 text-[#FFC000] border-[#FFC000]/20';
+      case 'Awaiting Verification': return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+      case 'Awaiting Decision': return 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20';
+      case 'Verification Failed': return 'bg-red-500/10 text-red-400 border-red-500/20';
+      case 'Async Verification Pending': return 'bg-orange-500/10 text-orange-400 border-orange-500/20';
+      case 'Return Requested': return 'bg-red-500/10 text-red-400 border-red-500/20';
+      case 'Neighbor Delivery': return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
+      case 'Locker Delivery': return 'bg-teal-500/10 text-teal-400 border-teal-500/20';
       default: return 'bg-gray-800 text-gray-400 border-gray-700';
     }
   };
@@ -79,7 +118,7 @@ const CustomerDashboard = () => {
         <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-10 gap-4">
           <div>
             <h1 className="text-4xl font-bold text-white tracking-tight">My Dashboard</h1>
-            <p className="text-gray-400 mt-2 text-lg">Track and manage your global shipments.</p>
+            <p className="text-gray-400 mt-2 text-lg">Welcome back, <span className="text-white font-semibold">{fullName}</span></p>
           </div>
           <Link to="/new-shipment" className="inline-flex items-center gap-2 px-6 py-3.5 bg-[#FFC000] text-black font-bold rounded-xl hover:bg-[#E5AC00] transition-all shadow-[0_0_20px_rgba(255,192,0,0.2)] hover:shadow-[0_0_30px_rgba(255,192,0,0.4)] hover:-translate-y-0.5">
             <Plus className="w-5 h-5" strokeWidth={3} />
@@ -104,6 +143,57 @@ const CustomerDashboard = () => {
             </div>
           ))}
         </div>
+
+        {/* Pending Async Verification Links */}
+        {asyncLinks.length > 0 && (
+          <div className="bg-orange-500/5 border border-orange-500/20 rounded-2xl p-6 mb-10">
+            <h2 className="text-lg font-bold text-orange-400 mb-4 flex items-center gap-2">
+              <Shield className="w-5 h-5" /> Async Identity Verification Required
+            </h2>
+            <p className="text-gray-400 text-sm mb-4">The courier needs you to verify your identity. Please complete the verification below.</p>
+            <div className="space-y-3">
+              {asyncLinks.map((link) => (
+                <div key={link.id} className="flex items-center justify-between bg-black/40 rounded-xl p-4 border border-orange-500/10">
+                  <div>
+                    <p className="text-white font-bold">Shipment #{link.shipment_id}</p>
+                    <p className="text-gray-400 text-sm">Expires: {new Date(link.expires_at).toLocaleString()}</p>
+                  </div>
+                  <button
+                    onClick={() => navigate(`/async-verify/${link.token}`)}
+                    className="px-6 py-2.5 bg-orange-500 text-white font-bold rounded-xl hover:bg-orange-400 transition-all flex items-center gap-2 shadow-lg shadow-orange-500/20"
+                  >
+                    <Shield className="w-4 h-4" /> Verify Now
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Pending Verification Calls */}
+        {pendingCalls.length > 0 && (
+          <div className="bg-purple-500/5 border border-purple-500/20 rounded-2xl p-6 mb-10">
+            <h2 className="text-lg font-bold text-purple-400 mb-4 flex items-center gap-2">
+              <Video className="w-5 h-5" /> Pending Verification Calls
+            </h2>
+            <div className="space-y-3">
+              {pendingCalls.map((call) => (
+                <div key={call.id} className="flex items-center justify-between bg-black/40 rounded-xl p-4 border border-purple-500/10">
+                  <div>
+                    <p className="text-white font-bold">Shipment #{call.shipment_id}</p>
+                    <p className="text-gray-400 text-sm">Courier is requesting delivery verification</p>
+                  </div>
+                  <button
+                    onClick={() => navigate(`/video-call/${call.session_token}`)}
+                    className="px-6 py-2.5 bg-purple-500 text-white font-bold rounded-xl hover:bg-purple-400 transition-all flex items-center gap-2 shadow-lg shadow-purple-500/20"
+                  >
+                    <Video className="w-4 h-4" /> Join Call
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Track Shipment */}
         <div className="bg-[#1A1A1A] rounded-2xl border border-[#333333] p-1 shadow-2xl mb-10">
@@ -144,7 +234,7 @@ const CustomerDashboard = () => {
           ) : (
           <div className="divide-y divide-[#333333]">
             {shipments.map((shipment) => (
-              <div key={shipment.id} className="p-6 hover:bg-white/5 transition-colors group">
+              <div key={shipment.id} className="p-6 hover:bg-white/5 transition-colors group cursor-pointer" onClick={() => navigate(`/order/${shipment.id}`)}>
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-3">
                   <div className="flex items-center gap-4">
                     <div className="w-12 h-12 bg-black rounded-xl flex items-center justify-center border border-[#333333] group-hover:border-[#FFC000]/50 transition-colors">
@@ -159,8 +249,25 @@ const CustomerDashboard = () => {
                     <span className={`self-start sm:self-center px-3 py-1.5 rounded-lg text-xs font-bold border ${statusColor(shipment.status)} uppercase tracking-wider`}>
                       {shipment.status}
                     </span>
+                    {shipment.courier_id && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // If there's already a pending call, join it; otherwise start a new one
+                          const existingCall = pendingCalls.find(c => c.shipment_id === shipment.id);
+                          if (existingCall) {
+                            navigate(`/video-call/${existingCall.session_token}`);
+                          } else {
+                            handleCall(shipment.id);
+                          }
+                        }}
+                        className="px-3 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-400 transition-colors flex items-center gap-1 shadow-lg shadow-green-500/20"
+                      >
+                        <Phone className="w-3.5 h-3.5" /> Call
+                      </button>
+                    )}
                     {shipment.status === 'Pending' && (
-                      <button onClick={() => handleDelete(shipment.id)} className="p-2 text-gray-500 hover:text-red-400 transition-colors" title="Delete shipment">
+                      <button onClick={(e) => { e.stopPropagation(); handleDelete(shipment.id); }} className="p-2 text-gray-500 hover:text-red-400 transition-colors" title="Delete shipment">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     )}

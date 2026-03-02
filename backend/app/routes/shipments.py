@@ -33,6 +33,7 @@ def create_shipment(
         package_type=shipment.package_type,
         description=shipment.description,
         image_url=shipment.image_url,
+        voice_verification_required=shipment.voice_verification_required or False,
         status="Pending"
     )
     db.add(new_shipment)
@@ -106,6 +107,14 @@ def update_shipment(
         shipment.image_url = update_data.image_url
     
     if update_data.status:
+        # Block delivery completion if voice verification is required but not approved
+        if update_data.status == "Delivered" and shipment.voice_verification_required:
+            if shipment.voice_verification_status != "approved":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Voice verification is required before marking as delivered. "
+                           "Please complete the voice verification process first."
+                )
         shipment.status = update_data.status
 
     db.commit()

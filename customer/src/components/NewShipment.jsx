@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Package, MapPin, User, Upload, ArrowRight, ArrowLeft, CheckCircle, Camera, X } from 'lucide-react';
+import { Package, MapPin, User, Upload, ArrowRight, ArrowLeft, CheckCircle, Camera, X, Shield } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { createShipment } from '../services/api';
 
@@ -12,7 +12,8 @@ const NewShipment = () => {
     senderName: '', senderPhone: '', senderAddress: '',
     receiverName: '', receiverPhone: '', receiverAddress: '',
     packageWeight: '', packageType: 'Standard', description: '',
-    receiverImage: null // To store the uploaded image
+    receiverImage: null, // To store the uploaded image
+    voiceVerification: false // Enable voice verification on delivery
   });
 
   const handleChange = (e) => {
@@ -23,7 +24,11 @@ const NewShipment = () => {
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      setFormData({ ...formData, receiverImage: URL.createObjectURL(file) });
+      const reader = new FileReader();
+      reader.onload = () => {
+        setFormData((prev) => ({ ...prev, receiverImage: reader.result }));
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -49,6 +54,7 @@ const NewShipment = () => {
         package_type: formData.packageType,
         description: formData.description || null,
         image_url: formData.receiverImage || null,
+        voice_verification_required: formData.voiceVerification,
       };
       await createShipment(payload);
       navigate('/dashboard');
@@ -184,6 +190,37 @@ const NewShipment = () => {
               <p className="text-gray-400 text-sm leading-relaxed bg-black/50 p-4 rounded-xl border border-[#333333]">
                 <strong className="text-[#FFC000]">Secure Delivery:</strong> Please upload a photo of the authorized receiver (Owner or Neighbor) or the specific location (e.g., front door) to help our driver verify the correct delivery target.
               </p>
+
+              {/* Voice Verification Toggle */}
+              <div className="mt-4 p-4 bg-black/50 rounded-xl border border-[#333333]">
+                <label className="flex items-center justify-between cursor-pointer group">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-[#FFC000]/10 rounded-lg group-hover:bg-[#FFC000]/20 transition-colors">
+                      <Shield size={20} className="text-[#FFC000]" />
+                    </div>
+                    <div>
+                      <p className="text-white font-bold text-sm">Voice Verification</p>
+                      <p className="text-gray-500 text-xs">Require voice identity check upon delivery</p>
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={formData.voiceVerification}
+                      onChange={(e) => setFormData({ ...formData, voiceVerification: e.target.checked })}
+                      className="sr-only"
+                    />
+                    <div className={`w-12 h-6 rounded-full transition-colors ${formData.voiceVerification ? 'bg-[#FFC000]' : 'bg-[#333333]'}`}>
+                      <div className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform mt-0.5 ${formData.voiceVerification ? 'translate-x-6.5 ml-1' : 'translate-x-0.5'}`}></div>
+                    </div>
+                  </div>
+                </label>
+                {formData.voiceVerification && (
+                  <p className="mt-3 text-xs text-[#FFC000] bg-[#FFC000]/10 p-2 rounded-lg">
+                    The courier will send a voice verification link before completing delivery. You must verify your identity with your registered voice.
+                  </p>
+                )}
+              </div>
 
               <div className="mt-4">
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Upload Reference Image (Owner/Neighbor)</label>
