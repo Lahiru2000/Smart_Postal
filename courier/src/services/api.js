@@ -27,4 +27,28 @@ export const getShipments = () => api.get('/shipments/');
 export const getShipmentById = (id) => api.get(`/shipments/${id}`);
 export const updateShipment = (id, data) => api.put(`/shipments/${id}`, data);
 
+// Voice Verification APIs
+export const startVoiceVerification = (shipmentId) =>
+  api.post('/voice-auth/verification/start', { shipment_id: shipmentId });
+export const getVerificationStatus = (verificationId) =>
+  api.get(`/voice-auth/verification/${verificationId}/status`);
+
+// Video Call APIs
+export const initiateVideoCall = (data) => api.post('/video-call/initiate', data);
+export const getIncomingCalls = () => api.get('/video-call/incoming');
+export const getVideoCall = (roomId) => api.get(`/video-call/${roomId}`);
+export const answerVideoCall = (roomId) => api.put(`/video-call/${roomId}/answer`);
+export const declineVideoCall = (roomId) => api.put(`/video-call/${roomId}/decline`);
+export const endVideoCall = (roomId) => api.put(`/video-call/${roomId}/end`);
+export const getVideoCallWsUrl = (roomId) => {
+  const token = localStorage.getItem('token');
+  const wsBase = API_URL.replace(/^http/, 'ws');
+  return `${wsBase}/video-call/ws/${roomId}?token=${token}`;
+};
+
+// Verification Link APIs
+export const generateVerificationLink = (data) => api.post('/verification-link/generate', data);
+export const getVerificationLinks = (shipmentId) => api.get(`/verification-link/shipment/${shipmentId}`);
+export const getVerificationLinkStatus = (token) => api.get(`/verification-link/status/${token}`);
+
 export default api;

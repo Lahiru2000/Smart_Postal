@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
@@ -28,10 +28,16 @@ class Shipment(Base):
     description = Column(Text, nullable=True)
     
     status = Column(String(50), default="Pending")
-    image_url = Column(String(255), nullable=True) # Verification image
+    image_url = Column(String(500), nullable=True)   # Verification image path
+    video_url = Column(String(500), nullable=True)   # Verification video path
+    media_type = Column(String(20), nullable=True)   # 'image' | 'video' | None
     
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    voice_verification_required = Column(Boolean, default=False)
+    voice_verification_status = Column(String(20), nullable=True)  # None, pending, approved, failed
 
     # Relationships
     sender = relationship("User", foreign_keys=[sender_id], back_populates="sent_shipments")
     courier = relationship("User", foreign_keys=[courier_id], back_populates="assigned_shipments")
+    voice_verifications = relationship("VoiceVerification", back_populates="shipment")

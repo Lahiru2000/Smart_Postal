@@ -144,7 +144,7 @@ const CustomerDashboard = () => {
           ) : (
           <div className="divide-y divide-[#333333]">
             {shipments.map((shipment) => (
-              <div key={shipment.id} className="p-6 hover:bg-white/5 transition-colors group">
+              <div key={shipment.id} onClick={() => navigate(`/shipment/${shipment.id}`)} className="p-6 hover:bg-white/5 transition-colors group cursor-pointer">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-3">
                   <div className="flex items-center gap-4">
                     <div className="w-12 h-12 bg-black rounded-xl flex items-center justify-center border border-[#333333] group-hover:border-[#FFC000]/50 transition-colors">
@@ -160,7 +160,7 @@ const CustomerDashboard = () => {
                       {shipment.status}
                     </span>
                     {shipment.status === 'Pending' && (
-                      <button onClick={() => handleDelete(shipment.id)} className="p-2 text-gray-500 hover:text-red-400 transition-colors" title="Delete shipment">
+                      <button onClick={(e) => { e.stopPropagation(); handleDelete(shipment.id); }} className="p-2 text-gray-500 hover:text-red-400 transition-colors" title="Delete shipment">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     )}
