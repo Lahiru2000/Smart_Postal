@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 from sqlalchemy import Column, Integer, String, Enum, DateTime, Boolean, ForeignKey
+=======
+from sqlalchemy import Column, Integer, String, Boolean, Enum
+>>>>>>> 54e2011845a6733081074d04a5f29da037390fd1
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -21,9 +25,13 @@ class User(Base):
     phone = Column(String(20))
     role = Column(Enum(UserRole), default=UserRole.CUSTOMER)
 
+    # Voice auth fields
+    voice_enrolled = Column(Boolean, default=False)
+
     # Relationships
     sent_shipments = relationship("Shipment", foreign_keys="Shipment.sender_id", back_populates="sender")
     assigned_shipments = relationship("Shipment", foreign_keys="Shipment.courier_id", back_populates="courier")
+<<<<<<< HEAD
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
 
 
@@ -44,3 +52,7 @@ class RefreshToken(Base):
     expires_at = Column(DateTime, nullable=False)
 
     user = relationship("User", back_populates="refresh_tokens")
+=======
+    voice_enrollments = relationship("VoiceEnrollment", back_populates="user")
+    voice_profile = relationship("VoiceProfile", back_populates="user", uselist=False)
+>>>>>>> 54e2011845a6733081074d04a5f29da037390fd1

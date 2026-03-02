@@ -12,6 +12,11 @@ const Navbar = () => {
   const navLinks = [
     { name: 'Home', path: '/' },
     { name: 'Dashboard', path: '/dashboard' },
+<<<<<<< HEAD
+=======
+    { name: 'Voice Auth', path: '/voice-enrollment' },
+    { name: 'Profile', path: '/profile' },
+>>>>>>> 54e2011845a6733081074d04a5f29da037390fd1
   ];
 
   const isActive = (path) => location.pathname === path;

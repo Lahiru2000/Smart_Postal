@@ -114,6 +114,7 @@ export const getShipments = () => api.get('/shipments/');
 export const getShipmentById = (id) => api.get(`/shipments/${id}`);
 export const updateShipment = (id, data) => api.put(`/shipments/${id}`, data);
 
+<<<<<<< HEAD
 // Video Call APIs
 export const initiateCall = (shipmentId) => api.post('/calls/initiate', { shipment_id: shipmentId });
 export const getIncomingCalls = () => api.get('/calls/incoming');
@@ -144,5 +145,12 @@ export const getAsyncVerification = (token) => api.get(`/verification/async/${to
 export const getAsyncVerificationFrames = (token) => api.get(`/verification/async/${token}/frames`);
 export const analyzeAsyncVerification = (token) => api.post(`/verification/async/${token}/analyze`);
 export const decideAsyncVerification = (token, data) => api.post(`/verification/async/${token}/decide`, data);
+=======
+// Voice Verification APIs
+export const startVoiceVerification = (shipmentId) =>
+  api.post('/voice-auth/verification/start', { shipment_id: shipmentId });
+export const getVerificationStatus = (verificationId) =>
+  api.get(`/voice-auth/verification/${verificationId}/status`);
+>>>>>>> 54e2011845a6733081074d04a5f29da037390fd1
 
 export default api;

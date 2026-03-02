@@ -112,6 +112,7 @@ export const trackShipment = (trackingNumber) => api.get(`/shipments/track/${tra
 export const updateShipment = (id, data) => api.put(`/shipments/${id}`, data);
 export const deleteShipment = (id) => api.delete(`/shipments/${id}`);
 
+<<<<<<< HEAD
 // Video Call APIs
 export const initiateCall = (shipmentId) => api.post('/calls/initiate', { shipment_id: shipmentId });
 export const getIncomingCalls = () => api.get('/calls/incoming');
@@ -134,5 +135,27 @@ export const getAsyncVerification = (token) => api.get(`/verification/async/${to
 export const submitAsyncVerification = (token, data) => api.post(`/verification/async/${token}/submit`, data);
 export const getMyPendingVerificationLinks = () => api.get('/verification/my-pending-links');
 export const getAsyncVerifications = (shipmentId) => api.get(`/verification/async-pending/${shipmentId}`);
+=======
+// Voice Auth APIs
+export const getEnrollmentStatus = () => api.get('/voice-auth/enrollment/status');
+export const startEnrollment = () => api.post('/voice-auth/enrollment/start');
+export const resetVoiceProfile = () => api.delete('/voice-auth/enrollment/reset');
+export const submitEnrollmentSample = (enrollmentId, audioFile) => {
+  const formData = new FormData();
+  formData.append('audio', audioFile);
+  return api.post(`/voice-auth/enrollment/${enrollmentId}/sample`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+export const getVerificationStatus = (verificationId) =>
+  api.get(`/voice-auth/verification/${verificationId}/status`);
+export const submitVerification = (verificationId, audioFile) => {
+  const formData = new FormData();
+  formData.append('audio', audioFile);
+  return api.post(`/voice-auth/verification/${verificationId}/submit`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+>>>>>>> 54e2011845a6733081074d04a5f29da037390fd1
 
 export default api;
