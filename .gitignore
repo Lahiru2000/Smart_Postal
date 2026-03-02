@@ -1,3 +1,9 @@
+# Uploaded media files (images, videos, audio)
+backend/app/uploads/shipments/*
+backend/app/uploads/verifications/*
+!backend/app/uploads/shipments/.gitkeep
+!backend/app/uploads/verifications/.gitkeep
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

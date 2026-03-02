@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import uuid
+import os
 from app.database import get_db
 from app.models.shipment import Shipment
 from app.models.user import User, UserRole
@@ -9,6 +10,10 @@ from app.schemas.shipment import ShipmentCreate, ShipmentUpdate, ShipmentRespons
 from app.services.auth import get_current_user
 
 router = APIRouter(prefix="/shipments", tags=["Shipments"])
+
+# Upload directory for shipment media (images + videos)
+SHIPMENT_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads", "shipments")
+os.makedirs(SHIPMENT_UPLOAD_DIR, exist_ok=True)
 
 @router.post("/", response_model=ShipmentResponse)
 def create_shipment(
@@ -33,6 +38,9 @@ def create_shipment(
         package_type=shipment.package_type,
         description=shipment.description,
         image_url=shipment.image_url,
+        video_url=shipment.video_url,
+        media_type=shipment.media_type,
+        voice_verification_required=shipment.voice_verification_required or False,
         status="Pending"
     )
     db.add(new_shipment)
@@ -104,8 +112,36 @@ def update_shipment(
         if shipment.image_url:
              raise HTTPException(status_code=400, detail="Image already exists. Cannot replace.")
         shipment.image_url = update_data.image_url
-    
+
+    # Video URL update
+    if update_data.video_url is not None:
+        shipment.video_url = update_data.video_url
+
+    # Media type update
+    if update_data.media_type is not None:
+        shipment.media_type = update_data.media_type
+
+    # Update editable fields (customer can update before delivery)
+    for field in ["receiver_name", "receiver_phone", "delivery_address", "package_weight", "package_type", "description"]:
+        val = getattr(update_data, field, None)
+        if val is not None:
+            setattr(shipment, field, val)
+
+    if update_data.voice_verification_required is not None:
+        shipment.voice_verification_required = update_data.voice_verification_required
+
+    if update_data.courier_id is not None and current_user.role == UserRole.COURIER:
+        shipment.courier_id = update_data.courier_id
+
     if update_data.status:
+        # Block delivery completion if voice verification is required but not approved
+        if update_data.status == "Delivered" and shipment.voice_verification_required:
+            if shipment.voice_verification_status != "approved":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Voice verification is required before marking as delivered. "
+                           "Please complete the voice verification process first."
+                )
         shipment.status = update_data.status
 
     db.commit()
@@ -131,3 +167,45 @@ def delete_shipment(
     db.delete(shipment)
     db.commit()
     return {"detail": "Shipment deleted successfully"}
+
+
+@router.post("/upload-media")
+async def upload_shipment_media(
+    file: UploadFile = File(...),
+    media_type: str = Form(...),  # 'image' or 'video'
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Upload an image or video file for a shipment.
+    Returns the URL path that can be stored in the shipment record.
+    """
+    # Validate media type
+    if media_type not in ("image", "video"):
+        raise HTTPException(status_code=400, detail="media_type must be 'image' or 'video'")
+
+    # Validate file type
+    allowed_image = {"image/jpeg", "image/png", "image/gif", "image/svg+xml", "image/webp"}
+    allowed_video = {"video/mp4", "video/webm", "video/quicktime", "video/x-matroska", "video/avi"}
+    allowed = allowed_image if media_type == "image" else allowed_video
+
+    if file.content_type not in allowed:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
+
+    # Size limits: images 5MB, videos 100MB
+    max_size = 5 * 1024 * 1024 if media_type == "image" else 100 * 1024 * 1024
+    contents = await file.read()
+    if len(contents) > max_size:
+        limit_mb = max_size // (1024 * 1024)
+        raise HTTPException(status_code=400, detail=f"File too large. Max {limit_mb}MB.")
+
+    # Generate unique filename
+    ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else ("jpg" if media_type == "image" else "webm")
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    filepath = os.path.join(SHIPMENT_UPLOAD_DIR, filename)
+
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    # Return the public URL
+    url = f"/uploads/shipments/{filename}"
+    return {"url": url, "media_type": media_type, "filename": filename}
