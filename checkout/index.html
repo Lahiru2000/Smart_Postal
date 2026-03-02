@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Checkout – Apple</title>
+  <style>
+    /* ── Reset & Base ─────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+      background: #f5f5f7;
+      color: #1d1d1f;
+      min-height: 100vh;
+    }
+    a { color: #0071e3; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Header ───────────────────────────────────── */
+    .page-header {
+      background: #fff;
+      border-bottom: 1px solid #e5e5e7;
+      padding: 0.75rem 0;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .header-content {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 3.5rem;
+    }
+    .logo {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #1d1d1f;
+      letter-spacing: -0.5px;
+    }
+    .logo span { color: #0071e3; }
+
+    /* ── Layout ───────────────────────────────────── */
+    .container {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 2.5rem;
+    }
+
+    h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      color: #1d1d1f;
+      margin-bottom: 1rem;
+      letter-spacing: -0.5px;
+    }
+
+    h2 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      color: #1d1d1f;
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.3px;
+    }
+
+    p {
+      font-size: 0.9375rem;
+      line-height: 1.6;
+      color: #555555;
+    }
+
+    /* ── Grid Layout ───────────────────────────────── */
+    .checkout-wrapper {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 3rem;
+    }
+
+    .left-section {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .right-section {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    /* ── Progress Stepper ─────────────────────────── */
+    .progress-steps {
+      display: flex;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+      padding-bottom: 2rem;
+      border-bottom: 1px solid #e5e5e7;
+    }
+
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      flex: 1;
+    }
+
+    .step-number {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      background: #f5f5f7;
+      border-radius: 50%;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #555555;
+      flex-shrink: 0;
+    }
+
+    .step.active .step-number {
+      background: #0071e3;
+      color: #fff;
+    }
+
+    .step.completed .step-number {
+      background: #34c759;
+      color: #fff;
+    }
+
+    .step-content h3 {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #1d1d1f;
+      margin-bottom: 0.25rem;
+    }
+
+    .step-content p {
+      font-size: 0.8125rem;
+      color: #86868b;
+    }
+
+    /* ── Cards ─────────────────────────────────────── */
+    .card {
+      background: #fff;
+      border: 1px solid #e5e5e7;
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      margin-bottom: 0;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid #f5f5f7;
+    }
+
+    .card-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      background: #f5f5f7;
+      border-radius: 0.5rem;
+      font-size: 1.5rem;
+      flex-shrink: 0;
+    }
+
+    /* ── Form Elements ────────────────────────────── */
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    label {
+      display: block;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #86868b;
+      margin-bottom: 0.4rem;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 0.75rem;
+      background: #fff;
+      border: 1px solid #d2d2d7;
+      border-radius: 0.375rem;
+      color: #1d1d1f;
+      font-size: 0.9375rem;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+
+    input:focus, select:focus {
+      outline: none;
+      border-color: #0071e3;
+      box-shadow: 0 0 0 3px rgba(0,113,227,.1);
+    }
+
+    input::placeholder {
+      color: #a1a1a6;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .row.full { grid-template-columns: 1fr; }
+
+    /* ── Buttons ───────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 1rem;
+      border: none;
+      border-radius: 0.375rem;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      letter-spacing: -0.3px;
+    }
+
+    .btn-primary {
+      background: #0071e3;
+      color: #fff;
+      width: 100%;
+    }
+
+    .btn-primary:hover {
+      background: #0a66d2;
+    }
+
+    .btn-primary:disabled {
+      background: #d2d2d7;
+      color: #a1a1a6;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1.5px solid #d2d2d7;
+      color: #0071e3;
+    }
+
+    .btn-secondary:hover {
+      border-color: #0071e3;
+      background: rgba(0,113,227,.05);
+    }
+
+    .btn-small {
+      padding: 0.5rem 0.875rem;
+      font-size: 0.8125rem;
+    }
+
+    /* ── Product Card ─────────────────────────────── */
+    .product-card {
+      background: #fff;
+      border: 1px solid #e5e5e7;
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      text-align: center;
+    }
+
+    .product-image {
+      width: 100%;
+      height: 200px;
+      background: linear-gradient(135deg, #f5f5f7 0%, #f9f9fb 100%);
+      border-radius: 0.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.25rem;
+      font-size: 4rem;
+    }
+
+    .product-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #1d1d1f;
+      margin-bottom: 0.25rem;
+    }
+
+    .product-spec {
+      font-size: 0.8125rem;
+      color: #86868b;
+      margin-bottom: 1rem;
+    }
+
+    .product-price {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: #1d1d1f;
+      margin-bottom: 0.5rem;
+    }
+
+    /* ── Order Summary ─────────────────────────────── */
+    .order-summary {
+      background: #fff;
+      border: 1px solid #e5e5e7;
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      position: sticky;
+      top: 5rem;
+    }
+
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem 0;
+      font-size: 0.9375rem;
+      border-bottom: 1px solid #f5f5f7;
+    }
+
+    .summary-row.total {
+      border: none;
+      padding: 1rem 0;
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #1d1d1f;
+    }
+
+    .summary-row .label {
+      color: #555555;
+    }
+
+    .summary-row .amount {
+      color: #1d1d1f;
+      font-weight: 500;
+    }
+
+    /* ── Info Grid ─────────────────────────────────── */
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .info-item {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .info-item label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: #86868b;
+      margin-bottom: 0.3rem;
+    }
+
+    .info-item .value {
+      color: #1d1d1f;
+      font-weight: 500;
+      font-size: 0.9375rem;
+    }
+
+    /* ── Mic Button ────────────────────────────── */
+    .mic-btn {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+      transition: all 0.2s;
+      background: #0071e3;
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(0,113,227,.15);
+      margin: 0 auto;
+    }
+
+    .mic-btn:hover:not(:disabled) {
+      background: #0a66d2;
+      box-shadow: 0 8px 20px rgba(0,113,227,.2);
+    }
+
+    .mic-btn:disabled {
+      background: #d2d2d7;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .mic-btn.recording {
+      background: #ff3b30;
+      box-shadow: 0 4px 12px rgba(255,59,48,.15);
+      animation: pulse-mic 1s ease-in-out infinite;
+    }
+
+    .mic-btn.processing {
+      background: #a1a1a6;
+      cursor: not-allowed;
+    }
+
+    @keyframes pulse-mic {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.08); }
+    }
+
+    /* ── Progress Bars ─────────────────────────── */
+    .progress-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: #e5e5e7;
+      margin-bottom: 0.25rem;
+      transition: all 0.3s;
+      overflow: hidden;
+    }
+
+    .progress-bar.done {
+      background: #34c759;
+    }
+
+    .progress-bar.active {
+      background: #0071e3;
+      animation: progress-pulse 1.2s ease-in-out infinite;
+    }
+
+    @keyframes progress-pulse {
+      0%, 100% { opacity: 0.7; }
+      50% { opacity: 1; }
+    }
+
+    .progress-label {
+      font-size: 0.75rem;
+      color: #86868b;
+      text-align: center;
+      margin-top: 0.3rem;
+    }
+
+    .progress-label.done {
+      color: #34c759;
+      font-weight: 600;
+    }
+
+    .progress-label.active {
+      color: #0071e3;
+      font-weight: 600;
+    }
+
+    /* ── Alert ─────────────────────────────────────── */
+    .alert {
+      padding: 1rem;
+      border-radius: 0.5rem;
+      margin-bottom: 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+
+    .alert-error {
+      background: rgba(255,59,48,.08);
+      color: #d70015;
+      border: 1px solid rgba(255,59,48,.2);
+    }
+
+    .alert-success {
+      background: rgba(52,199,89,.08);
+      color: #00aa00;
+      border: 1px solid rgba(52,199,89,.2);
+    }
+
+    .alert-info {
+      background: rgba(0,113,227,.08);
+      color: #0071e3;
+      border: 1px solid rgba(0,113,227,.15);
+    }
+
+    /* ── Enrollment Checklist ─────────────────────── */
+    .enrollment-checklist {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .checklist-item {
+      display: flex;
+      gap: 0.75rem;
+      font-size: 0.875rem;
+      color: #555555;
+      padding: 0.75rem;
+      background: #f5f5f7;
+      border-radius: 0.5rem;
+    }
+
+    .checklist-item::before {
+      content: '✓';
+      color: #34c759;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    /* ── Login Overlay ─────────────────────────────── */
+    .login-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+
+    .login-box {
+      background: #fff;
+      border-radius: 1rem;
+      padding: 2rem;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.15);
+    }
+
+    .login-box h2 {
+      text-align: center;
+      margin-bottom: 1.5rem;
+      font-size: 1.5rem;
+    }
+
+    /* ── Success Screen ────────────────────────────── */
+    .success-screen {
+      text-align: center;
+      padding: 3rem 1rem;
+    }
+
+    .success-icon {
+      width: 80px;
+      height: 80px;
+      background: rgba(52,199,89,.1);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 1.5rem;
+      font-size: 2.5rem;
+    }
+
+    .tracking-code {
+      display: inline-block;
+      background: #f5f5f7;
+      border: 1px solid #e5e5e7;
+      padding: 0.75rem 1.5rem;
+      border-radius: 0.5rem;
+      font-family: 'Monaco', monospace;
+      font-size: 1rem;
+      font-weight: 600;
+      color: #0071e3;
+      margin-top: 1rem;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(0,0,0,.1);
+      border-top-color: #0071e3;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ── Responsive ───────────────────────────────── */
+    @media (max-width: 768px) {
+      .checkout-wrapper {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+      }
+
+      .order-summary {
+        position: static;
+      }
+
+      .progress-steps {
+        flex-direction: column;
+        gap: 1rem;
+      }
+
+      h1 {
+        font-size: 1.75rem;
+      }
+
+      .row {
+        grid-template-columns: 1fr;
+      }
+
+      .info-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .container {
+        padding: 1.5rem;
+      }
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════ HEADER -->
+<header class="page-header">
+  <div class="header-content">
+    <div class="logo">Smart<span>Postal</span></div>
+    <div id="userBadge" style="font-size: 0.875rem; color: #555555;"></div>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════ LOGIN OVERLAY -->
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-box">
+    <h2>Sign in</h2>
+    <div id="loginError" class="alert alert-error hidden"></div>
+    <div class="form-group">
+      <label>Email</label>
+      <input type="email" id="loginEmail" placeholder="name@example.com" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" id="loginPassword" placeholder="••••••••" />
+    </div>
+    <button class="btn btn-primary" onclick="handleLogin()">Sign in</button>
+    <p style="text-align: center; margin-top: 1rem; font-size: 0.8125rem; color: #86868b;">
+      Don't have an account? <a href="http://localhost:3001/register">Create one</a>
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════ CHECKOUT -->
+<div id="checkoutPage">
+  <div class="container">
+    <h1>Complete your order</h1>
+
+    <!-- Progress Steps -->
+    <div class="progress-steps">
+      <div class="step completed">
+        <div class="step-number">✓</div>
+        <div class="step-content">
+          <h3>Review</h3>
+          <p>Your items</p>
+        </div>
+      </div>
+      <div class="step active">
+        <div class="step-number">2</div>
+        <div class="step-content">
+          <h3>Delivery</h3>
+          <p>Address & contact</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-number">3</div>
+        <div class="step-content">
+          <h3>Payment</h3>
+          <p>Complete checkout</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="globalAlert" class="alert hidden"></div>
+
+    <div class="checkout-wrapper">
+      <!-- LEFT SECTION -->
+      <div class="left-section">
+        <!-- Delivery Info -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">📬</div>
+            <div>
+              <h2>Delivery address</h2>
+              <p>Where should we send your order?</p>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Full Name</label>
+            <input type="text" id="receiverName" placeholder="John Doe" />
+          </div>
+
+          <div class="row">
+            <div class="form-group">
+              <label>Phone Number</label>
+              <input type="tel" id="receiverPhone" placeholder="+961 71 000 000" />
+            </div>
+            <div class="form-group">
+              <label>Email</label>
+              <input type="email" placeholder="john@example.com" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Delivery Address</label>
+            <input type="text" id="receiverAddress" placeholder="Street address, apartment, etc." />
+          </div>
+
+          <div class="row">
+            <div class="form-group">
+              <label>City</label>
+              <input type="text" placeholder="Beirut" />
+            </div>
+            <div class="form-group">
+              <label>Postal Code</label>
+              <input type="text" placeholder="12345" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Voice Authentication -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon">🎤</div>
+            <div>
+              <h2>Voice verification</h2>
+              <p>Secure your delivery with AI-powered voice authentication</p>
+            </div>
+          </div>
+
+          <!-- Already Enrolled -->
+          <div id="enrolledArea" class="hidden">
+            <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; padding: 1rem; background: rgba(52,199,89,.08); border-radius: 0.5rem; border: 1px solid rgba(52,199,89,.2);">
+              <div style="font-size: 1.5rem;">✅</div>
+              <div>
+                <h3 style="font-size: 0.875rem; font-weight: 600; color: #1d1d1f; margin-bottom: 0.1rem;">Voice profile active</h3>
+                <p style="font-size: 0.8125rem; color: #86868b;">Your voice will be verified upon delivery</p>
+              </div>
+            </div>
+            <div style="display: flex; gap: 0.75rem; margin-bottom: 1rem; padding: 1rem; background: #f5f5f7; border-radius: 0.5rem;">
+              <div style="flex: 1;">
+                <p style="font-size: 0.75rem; font-weight: 600; color: #86868b; margin-bottom: 0.4rem;">Voice Samples</p>
+                <div style="height: 6px; background: #e5e5e7; border-radius: 3px; overflow: hidden;">
+                  <div style="height: 100%; width: 100%; background: #34c759; border-radius: 3px;"></div>
+                </div>
+                <p style="font-size: 0.75rem; color: #34c759; margin-top: 0.3rem; font-weight: 600;" id="enrolledSampleCount">3/3 verified</p>
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-small" onclick="handleReEnroll()" style="width: auto;">Re-enroll voice</button>
+          </div>
+
+          <!-- Not Started -->
+          <div id="notStartedArea" class="hidden">
+            <div style="text-align: center; margin-bottom: 1.5rem;">
+              <p style="color: #555555; font-size: 0.9375rem; margin-bottom: 1rem;">
+                Enroll your voice to enable secure delivery verification. Just <strong>3 quick voice samples</strong> needed.
+              </p>
+            </div>
+            <div class="enrollment-checklist">
+              <div class="checklist-item">Each sample verified by AI for authenticity</div>
+              <div class="checklist-item">All samples must be from the same person</div>
+              <div class="checklist-item">Takes less than 2 minutes total</div>
+              <div class="checklist-item">Enables secure package verification</div>
+            </div>
+            <button class="btn btn-primary" onclick="handleStartEnrollment()" style="margin-top: 1.5rem;">Start enrollment</button>
+          </div>
+
+          <!-- Enrollment In Progress -->
+          <div id="enrollmentArea" class="hidden">
+            <div style="margin-bottom: 1.5rem;">
+              <h3 style="font-size: 0.875rem; font-weight: 600; color: #1d1d1f; margin-bottom: 1rem;">Enrollment progress</h3>
+              <div style="display: flex; gap: 0.75rem;">
+                <div style="flex: 1;">
+                  <div class="progress-bar" id="bar0"></div>
+                  <p class="progress-label" id="barLabel0">Sample 1</p>
+                </div>
+                <div style="flex: 1;">
+                  <div class="progress-bar" id="bar1"></div>
+                  <p class="progress-label" id="barLabel1">Sample 2</p>
+                </div>
+                <div style="flex: 1;">
+                  <div class="progress-bar" id="bar2"></div>
+                  <p class="progress-label" id="barLabel2">Sample 3</p>
+                </div>
+              </div>
+              <p style="text-align: center; font-size: 0.75rem; color: #86868b; margin-top: 0.75rem;" id="progressText">0/3 samples verified</p>
+            </div>
+
+            <div style="text-align: center; background: #f5f5f7; border-radius: 0.75rem; padding: 2rem 1rem; margin-bottom: 1rem;">
+              <h3 style="font-size: 0.9375rem; font-weight: 600; color: #1d1d1f; margin-bottom: 0.3rem;" id="recordTitle">Record voice sample 1</h3>
+              <p style="color: #86868b; font-size: 0.8125rem; margin-bottom: 1.5rem;">Speak naturally for 5–10 seconds</p>
+
+              <button class="mic-btn" id="micBtn" onclick="handleMicToggle()" disabled>
+                <span id="micIcon">🎙️</span>
+              </button>
+
+              <p style="margin-top: 1rem; font-size: 0.8125rem; font-weight: 500;" id="micLabel">
+                <span style="color: #86868b;">Tap to start recording</span>
+              </p>
+            </div>
+
+            <div id="enrollmentMessage" class="alert hidden"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT SECTION -->
+      <div class="right-section">
+        <!-- Product Summary -->
+        <div class="product-card">
+          <div class="product-image"><img src="https://i.ibb.co/QvcFkVnX/download.jpg" alt="Wireless Earbuds Pro X3" style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 0.5rem;" /></div>
+          <div class="product-title">17 Pro Max</div>
+          <div class="product-spec">Electronics – Fragile • 0.35 kg</div>
+          <div class="product-price">$1200</div>
+          <p style="font-size: 0.75rem; color: #86868b; margin-bottom: 1rem;">Item price</p>
+        </div>
+
+        <!-- Order Summary -->
+        <div class="order-summary">
+          <div style="margin-bottom: 1rem;">
+            <h3 style="font-size: 0.875rem; font-weight: 600; color: #1d1d1f; margin-bottom: 0.75rem;">Order summary</h3>
+          </div>
+
+          <div class="summary-row">
+            <span class="label">Subtotal</span>
+            <span class="amount">$1200.00</span>
+          </div>
+
+          <div class="summary-row">
+            <span class="label">Shipping</span>
+            <span class="amount">$10.00</span>
+          </div>
+
+          <div class="summary-row">
+            <span class="label">Tax</span>
+            <span class="amount">$0.00</span>
+          </div>
+
+          <div class="summary-row total">
+            <span>Total</span>
+            <span>$1210.00</span>
+          </div>
+        </div>
+
+        <!-- Sender Info -->
+         
+      </div>
+    </div>
+
+    <!-- Place Order Button -->
+    <div style="margin-top: 2rem; display: flex; gap: 1rem;">
+      <button class="btn btn-primary" id="placeOrderBtn" onclick="handlePlaceOrder()" disabled style="font-size: 1rem; padding: 1.25rem;">
+        Complete purchase
+      </button>
+      <button class="btn btn-secondary" style="font-size: 1rem; padding: 1.25rem;">Continue shopping</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════ SUCCESS -->
+<div class="container hidden" id="successPage">
+  <div class="success-screen">
+    <div class="success-icon">✓</div>
+    <h1 style="margin-bottom: 0.5rem;">Order confirmed</h1>
+    <p style="color: #555555; margin-bottom: 1.5rem; font-size: 1rem;">
+      Thank you! Your shipment is voice-protected and on its way.
+    </p>
+    <p style="color: #86868b; margin-bottom: 1.5rem; font-size: 0.875rem;">Order number</p>
+    <div class="tracking-code" id="trackingCode">TRK-XXXXXXXX</div>
+    <p style="color: #86868b; margin-top: 1.5rem; font-size: 0.875rem;">
+      <a href="http://localhost:3001/dashboard">View order details</a> • <a href="#">Print receipt</a>
+    </p>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  CONFIG & STATE
+// ═══════════════════════════════════════════════════════════════
+
+const API = 'http://localhost:8000';
+let token = localStorage.getItem('checkout_token') || '';
+let enrollmentId = null;
+let enrolledSamples = 0;
+let requiredSamples = 3;
+let isEnrolled = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+let isProcessing = false;
+let currentStream = null;
+
+// ═══════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════
+
+function $(id) { return document.getElementById(id); }
+
+function showAlert(id, msg, type = 'error') {
+  const el = $(id);
+  el.className = `alert alert-${type}`;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function hideAlert(id) { $(id).classList.add('hidden'); }
+
+async function api(method, path, body = null, isFormData = false) {
+  const headers = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (!isFormData) headers['Content-Type'] = 'application/json';
+
+  const opts = { method, headers };
+  if (body) opts.body = isFormData ? body : JSON.stringify(body);
+
+  const res = await fetch(`${API}${path}`, opts);
+  const data = await res.json();
+  if (!res.ok) {
+    const detail = data.detail;
+    const msg = typeof detail === 'string'
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map(e => e.msg || JSON.stringify(e)).join(', ')
+        : `Request failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  AUTH
+// ═══════════════════════════════════════════════════════════════
+
+async function handleLogin() {
+  hideAlert('loginError');
+  const email = $('loginEmail').value.trim();
+  const password = $('loginPassword').value;
+  if (!email || !password) return showAlert('loginError', 'Please enter email and password.');
+
+  try {
+    const res = await api('POST', '/auth/login', { email, password, role: 'customer' });
+    token = res.access_token;
+    localStorage.setItem('checkout_token', token);
+    $('loginOverlay').classList.add('hidden');
+    $('userBadge').textContent = `✓ ${email}`;
+    checkEnrollment();
+  } catch (e) {
+    showAlert('loginError', e.message);
+  }
+}
+
+(async function init() {
+  if (token) {
+    try {
+      await api('GET', '/voice-auth/enrollment/status');
+      $('loginOverlay').classList.add('hidden');
+      $('userBadge').textContent = '✓ Signed in';
+      checkEnrollment();
+    } catch {
+      token = '';
+      localStorage.removeItem('checkout_token');
+    }
+  }
+})();
+
+// ═══════════════════════════════════════════════════════════════
+//  ENROLLMENT CHECK
+// ═══════════════════════════════════════════════════════════════
+
+async function checkEnrollment() {
+  try {
+    const res = await api('GET', '/voice-auth/enrollment/status');
+    if (res.enrolled) {
+      setEnrolledState(res.verified_samples, res.required_samples);
+    } else if (res.status === 'pending' && res.enrollment_id) {
+      enrollmentId = res.enrollment_id;
+      enrolledSamples = res.verified_samples || 0;
+      requiredSamples = res.required_samples || 3;
+      setEnrollingState();
+    } else {
+      setNotEnrolledState();
+    }
+  } catch (e) {
+    showAlert('globalAlert', 'Failed to check voice enrollment: ' + e.message);
+  }
+}
+
+function setEnrolledState(samples, required) {
+  isEnrolled = true;
+  if (samples !== undefined) enrolledSamples = samples;
+  if (required !== undefined) requiredSamples = required;
+  $('enrolledArea').classList.remove('hidden');
+  $('notStartedArea').classList.add('hidden');
+  $('enrollmentArea').classList.add('hidden');
+  $('enrolledSampleCount').textContent = `${enrolledSamples || requiredSamples}/${requiredSamples} verified`;
+  updatePlaceOrderBtn();
+}
+
+function setNotEnrolledState() {
+  isEnrolled = false;
+  $('enrolledArea').classList.add('hidden');
+  $('notStartedArea').classList.remove('hidden');
+  $('enrollmentArea').classList.add('hidden');
+  updatePlaceOrderBtn();
+}
+
+function setEnrollingState() {
+  isEnrolled = false;
+  $('enrolledArea').classList.add('hidden');
+  $('notStartedArea').classList.add('hidden');
+  $('enrollmentArea').classList.remove('hidden');
+  $('micBtn').disabled = false;
+  updateProgressBars();
+  updatePlaceOrderBtn();
+}
+
+function updateProgressBars() {
+  for (let i = 0; i < 3; i++) {
+    const bar = $(`bar${i}`);
+    const label = $(`barLabel${i}`);
+    bar.className = 'progress-bar';
+    label.className = 'progress-label';
+    if (i < enrolledSamples) {
+      bar.classList.add('done');
+      label.classList.add('done');
+      label.textContent = `Sample ${i + 1} ✓`;
+    } else if (i === enrolledSamples) {
+      bar.classList.add('active');
+      label.classList.add('active');
+      label.textContent = `Sample ${i + 1}`;
+    } else {
+      label.textContent = `Sample ${i + 1}`;
+    }
+  }
+  $('progressText').textContent = `${enrolledSamples}/${requiredSamples} samples verified`;
+  $('recordTitle').textContent = `Record voice sample ${enrolledSamples + 1}`;
+}
+
+function updatePlaceOrderBtn() {
+  const name = $('receiverName').value.trim();
+  const phone = $('receiverPhone').value.trim();
+  const addr = $('receiverAddress').value.trim();
+  $('placeOrderBtn').disabled = !(isEnrolled && name && phone && addr);
+}
+
+['receiverName', 'receiverPhone', 'receiverAddress'].forEach(id => {
+  $(id).addEventListener('input', updatePlaceOrderBtn);
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  VOICE ENROLLMENT ACTIONS
+// ═══════════════════════════════════════════════════════════════
+
+async function handleStartEnrollment() {
+  hideAlert('globalAlert');
+  try {
+    const res = await api('POST', '/voice-auth/enrollment/start');
+    enrollmentId = res.enrollment_id;
+    requiredSamples = res.required_samples;
+    enrolledSamples = 0;
+    setEnrollingState();
+  } catch (e) {
+    showAlert('globalAlert', e.message);
+  }
+}
+
+async function handleReEnroll() {
+  if (!confirm('This will replace your voice profile. Continue?')) return;
+  try {
+    await api('DELETE', '/voice-auth/enrollment/reset');
+  } catch (e) {
+    if (!e.message.includes('400')) {
+      showAlert('globalAlert', e.message);
+      return;
+    }
+  }
+  isEnrolled = false;
+  enrollmentId = null;
+  enrolledSamples = 0;
+  await handleStartEnrollment();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  VOICE RECORDING
+// ═══════════════════════════════════════════════════════════════
+
+function handleMicToggle() {
+  if (isProcessing) return;
+  if (isRecording) {
+    stopRecording();
+  } else {
+    startRecording();
+  }
+}
+
+async function startRecording() {
+  hideAlert('enrollmentMessage');
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    showAlert('enrollmentMessage', 'Microphone access denied.', 'error');
+    return;
+  }
+  currentStream = stream;
+
+  audioChunks = [];
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.onstop = async () => {
+    currentStream?.getTracks().forEach(t => t.stop());
+    currentStream = null;
+    await submitSample();
+  };
+
+  mediaRecorder.start();
+  isRecording = true;
+
+  $('micBtn').className = 'mic-btn recording';
+  $('micIcon').textContent = '⏹️';
+  $('micLabel').innerHTML = '<span style="color: #ff3b30; font-weight: 600;">Recording — tap to stop</span>';
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+  }
+  isRecording = false;
+}
+
+async function submitSample() {
+  isProcessing = true;
+  $('micBtn').className = 'mic-btn processing';
+  $('micBtn').disabled = true;
+  $('micIcon').innerHTML = '<span class="spinner"></span>';
+  $('micLabel').innerHTML = '<span style="color: #0071e3;">Analyzing…</span>';
+
+  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+  const formData = new FormData();
+  formData.append('audio', blob, 'voice_sample.webm');
+
+  try {
+    const res = await api('POST', `/voice-auth/enrollment/${enrollmentId}/sample`, formData, true);
+    enrolledSamples = res.verified_samples;
+    updateProgressBars();
+
+    if (res.enrollment_complete) {
+      showAlert('enrollmentMessage', '✓ Voice enrollment complete! Ready for delivery verification.', 'success');
+      enrollmentId = null;
+      setTimeout(() => setEnrolledState(enrolledSamples, requiredSamples), 800);
+    } else {
+      showAlert('enrollmentMessage', res.message || `Sample ${enrolledSamples}/${requiredSamples} accepted.`, 'success');
+    }
+  } catch (e) {
+    showAlert('enrollmentMessage', e.message, 'error');
+    if (e.message.toLowerCase().includes('denied') || e.message.toLowerCase().includes('enrollment')) {
+      enrollmentId = null;
+      enrolledSamples = 0;
+      setNotEnrolledState();
+    }
+  } finally {
+    isProcessing = false;
+    isRecording = false;
+    $('micBtn').className = 'mic-btn';
+    $('micBtn').disabled = false;
+    $('micIcon').textContent = '🎙️';
+    $('micLabel').innerHTML = '<span style="color: #86868b;">Tap to start recording</span>';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PLACE ORDER
+// ═══════════════════════════════════════════════════════════════
+
+async function handlePlaceOrder() {
+  hideAlert('globalAlert');
+  const btn = $('placeOrderBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Completing purchase…';
+
+  const payload = {
+    sender_name: 'TechGadgets Online',
+    sender_phone: '+961 70 123 456',
+    pickup_address: 'Beirut Digital District, Bldg 42',
+    receiver_name: $('receiverName').value.trim(),
+    receiver_phone: $('receiverPhone').value.trim(),
+    delivery_address: $('receiverAddress').value.trim(),
+    package_weight: 0.35,
+    package_type: 'Electronics',
+    description: 'Wireless Earbuds Pro X3',
+    voice_verification_required: true,
+  };
+
+  try {
+    const res = await api('POST', '/shipments/', payload);
+    $('trackingCode').textContent = res.tracking_number;
+    $('checkoutPage').classList.add('hidden');
+    $('successPage').classList.remove('hidden');
+  } catch (e) {
+    showAlert('globalAlert', 'Order failed: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '🛒 Complete purchase';
+  }
+}
+</script>
+
+</body>
+</html>
