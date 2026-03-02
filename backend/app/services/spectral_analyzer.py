@@ -99,33 +99,33 @@ def _spectral_heuristics(audio_path: str) -> dict:
         ai_score = 0.0
 
         # Over-smooth energy envelope (AI voices often lack micro-variation)
-        if smoothness > 0.88:
+        if smoothness > 0.92:
             flags.append("spectral_over_smooth")
-            ai_score += 0.30
-        elif smoothness > 0.82:
+            ai_score += 0.25
+        elif smoothness > 0.87:
             flags.append("spectral_somewhat_smooth")
-            ai_score += 0.15
+            ai_score += 0.10
 
         # Low coefficient of variation (unnaturally consistent amplitude)
-        if cv < 0.10:
+        if cv < 0.06:
             flags.append("spectral_very_low_variability")
-            ai_score += 0.30
-        elif cv < 0.20:
+            ai_score += 0.25
+        elif cv < 0.12:
             flags.append("spectral_low_variability")
-            ai_score += 0.15
+            ai_score += 0.10
 
         # Compressed dynamic range
-        if dynamic_ratio < 0.3:
+        if dynamic_ratio < 0.2:
             flags.append("spectral_very_low_dynamics")
-            ai_score += 0.25
-        elif dynamic_ratio < 0.6:
+            ai_score += 0.20
+        elif dynamic_ratio < 0.4:
             flags.append("possible_replay_or_distortion")
-            ai_score += 0.15
+            ai_score += 0.10
 
         # Near-zero clipping is suspicious for digital speech
         if clip_ratio == 0.0 and mean_e > 500:
             flags.append("perfect_clipping_avoidance")
-            ai_score += 0.10
+            ai_score += 0.05
 
         ai_probability = _clamp(ai_score)
         confidence = _clamp(0.45 + len(flags) * 0.12)

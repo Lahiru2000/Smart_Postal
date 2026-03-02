@@ -94,33 +94,33 @@ def _prosodic_heuristics(audio_path: str) -> dict:
         ai_score = 0.0
 
         # Low energy variance — unnaturally flat speech
-        if cv < 0.08:
+        if cv < 0.05:
             flags.append("prosody_very_low_variance")
-            ai_score += 0.30
-        elif cv < 0.18:
+            ai_score += 0.25
+        elif cv < 0.10:
             flags.append("prosody_low_variance")
-            ai_score += 0.15
+            ai_score += 0.10
 
         # Machine-like rhythmic regularity
-        if rhythm_regularity > 0.90:
+        if rhythm_regularity > 0.94:
             flags.append("prosody_very_monotonic")
-            ai_score += 0.30
-        elif rhythm_regularity > 0.80:
+            ai_score += 0.25
+        elif rhythm_regularity > 0.87:
             flags.append("prosody_monotonic_rhythm")
-            ai_score += 0.15
+            ai_score += 0.10
 
         # Unusual pause distribution
-        if pause_ratio > 0.5:
+        if pause_ratio > 0.6:
             flags.append("excessive_pauses")
-            ai_score += 0.15
-        elif pause_ratio < 0.02 and duration_seconds > 2:
+            ai_score += 0.10
+        elif pause_ratio < 0.01 and duration_seconds > 3:
             flags.append("no_natural_pauses")
-            ai_score += 0.20
+            ai_score += 0.15
 
         # Too-perfect burst cadence
-        if bursts_per_second > 0 and bursts_per_second < 1.0 and rhythm_regularity > 0.75:
+        if bursts_per_second > 0 and bursts_per_second < 1.0 and rhythm_regularity > 0.85:
             flags.append("synthetic_cadence")
-            ai_score += 0.10
+            ai_score += 0.05
 
         ai_probability = _clamp(ai_score)
         confidence = _clamp(0.40 + len(flags) * 0.12)
