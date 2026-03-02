@@ -1,11 +1,32 @@
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-sqlalchemy==2.0.25
-pymysql==1.1.0
-python-dotenv==1.0.0
-pydantic==2.5.3
-pydantic-settings==2.1.0
-email-validator==2.1.0
-passlib[bcrypt]==1.7.4
-python-jose[cryptography]==3.3.0
-bcrypt==4.0.1
+fastapi
+uvicorn[standard]
+sqlalchemy
+pymysql
+python-dotenv
+pydantic
+pydantic-settings
+email-validator
+passlib[bcrypt]
+python-jose[cryptography]
+bcrypt
+websockets
+
+# ─── AI Face Verification ────────────────────────────────────────────────────
+# Optional primary engine: InsightFace (ArcFace ResNet-100 — highest accuracy)
+# Requires Microsoft C++ Build Tools on Windows AND Python ≤ 3.12.
+# Install manually ONLY if you have MSVC + a compatible Python version:
+#   pip install insightface onnxruntime
+# insightface>=0.7.3
+# onnxruntime>=1.16.0
+
+# Active primary engine: DeepFace ensemble (ArcFace + Facenet512 + VGG-Face)
+# Pure-Python wheels — installs on any platform with no compiler needed.
+deepface>=0.0.89
+tf-keras>=2.16.0
+
+# Computer vision & numerics
+opencv-python>=4.9.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+scikit-image>=0.22.0          # LBP texture analysis for liveness
+Pillow>=10.2.0                # image I/O used by DeepFace

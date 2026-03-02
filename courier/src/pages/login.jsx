@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, Navigate } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Package, Eye, Zap, Shield, TrendingUp } from 'lucide-react';
 import { loginUser } from '../services/api';
 
@@ -8,6 +8,11 @@ const Login = () => {
   const [formData, setFormData] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Already logged in as courier → redirect to dashboard
+  if (localStorage.getItem('token') && localStorage.getItem('role') === 'courier') {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -20,7 +25,10 @@ const Login = () => {
     try {
       const res = await loginUser({ ...formData, role: 'courier' });
       localStorage.setItem('token', res.data.access_token);
+      localStorage.setItem('refreshToken', res.data.refresh_token);
       localStorage.setItem('role', res.data.role);
+      localStorage.setItem('userId', res.data.user_id);
+      localStorage.setItem('fullName', res.data.full_name || '');
       navigate('/dashboard');
     } catch (err) {
       setError(err.response?.data?.detail || 'Login failed. Please try again.');

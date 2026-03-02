@@ -19,6 +19,10 @@ export default function CustomerProfile() {
     'Delivered': 'bg-green-500/10 text-green-400 border-green-500/20',
     'In Transit': 'bg-blue-500/10 text-blue-400 border-blue-500/20',
     'Processing': 'bg-[#FFC000]/10 text-[#FFC000] border-[#FFC000]/20',
+    'Pending': 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+    'Awaiting Decision': 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
+    'Verification Failed': 'bg-red-500/10 text-red-400 border-red-500/20',
+    'Async Verification Pending': 'bg-amber-500/10 text-amber-400 border-amber-500/20',
   };
 
   return (

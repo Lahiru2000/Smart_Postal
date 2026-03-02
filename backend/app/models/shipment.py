@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, DateTime, LargeBinary
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
@@ -28,7 +28,7 @@ class Shipment(Base):
     description = Column(Text, nullable=True)
     
     status = Column(String(50), default="Pending")
-    image_url = Column(String(255), nullable=True) # Verification image
+    image_url = Column(Text, nullable=True)  # Base64 data URL — needs Text (not String/255)
     
     created_at = Column(DateTime, default=datetime.utcnow)
 

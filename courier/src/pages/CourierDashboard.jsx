@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Package, Truck, CheckCircle, Clock, MapPin, TrendingUp, Star, ArrowUpRight, Zap, Calendar } from 'lucide-react';
-import { getShipments, updateShipment } from '../services/api';
+import { Package, Truck, CheckCircle, Clock, MapPin, TrendingUp, Star, ArrowUpRight, Zap, Calendar, Video, Phone } from 'lucide-react';
+import { getShipments, updateShipment, initiateCall } from '../services/api';
 
 const CourierDashboard = () => {
   const navigate = useNavigate();
   const [shipments, setShipments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const currentUserId = parseInt(localStorage.getItem('userId'));
+  const fullName = localStorage.getItem('fullName') || 'Courier';
 
   useEffect(() => {
     fetchShipments();
@@ -42,6 +44,15 @@ const CourierDashboard = () => {
     }
   };
 
+  const handleVerify = async (shipmentId) => {
+    try {
+      const res = await initiateCall(shipmentId);
+      navigate(`/video-call/${res.data.session_token}`);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to start verification call');
+    }
+  };
+
   // Compute stats from real data
   const activeCount = shipments.filter(s => s.status === 'In Transit' && s.courier_id).length;
   const deliveredCount = shipments.filter(s => s.status === 'Delivered').length;
@@ -72,6 +83,13 @@ const CourierDashboard = () => {
     'In Transit': 'bg-blue-500/10 text-blue-400 border-blue-500/20',
     'Delivered': 'bg-green-500/10 text-green-400 border-green-500/20',
     'Pending': 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+    'Awaiting Verification': 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+    'Awaiting Decision': 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20',
+    'Verification Failed': 'bg-red-500/10 text-red-400 border-red-500/20',
+    'Async Verification Pending': 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    'Return Requested': 'bg-red-500/10 text-red-400 border-red-500/20',
+    'Neighbor Delivery': 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+    'Locker Delivery': 'bg-teal-500/10 text-teal-400 border-teal-500/20',
   };
 
   return (
@@ -86,7 +104,7 @@ const CourierDashboard = () => {
               </div>
               <h1 className="text-3xl font-bold text-white tracking-tight">Dashboard</h1>
             </div>
-            <p className="text-gray-400 font-medium">Overview for {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
+            <p className="text-gray-400 font-medium">Welcome back, <span className="text-white font-semibold">{fullName}</span> &mdash; {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
           </div>
           
           <button className="px-5 py-2.5 bg-[#1A1A1A] hover:bg-[#252525] text-white border border-[#333333] rounded-xl font-bold text-sm transition-all flex items-center gap-2">
@@ -123,7 +141,7 @@ const CourierDashboard = () => {
             ) : (
             <div className="divide-y divide-[#333333]">
               {shipments.map((delivery) => (
-                <div key={delivery.id} className="p-5 hover:bg-white/5 transition-colors">
+                <div key={delivery.id} className="p-5 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => navigate(`/order/${delivery.id}`)}>
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">
                       <div className="p-2 bg-[#252525] rounded-lg text-[#FFC000]">
@@ -139,12 +157,17 @@ const CourierDashboard = () => {
                           {delivery.status}
                       </span>
                       {delivery.status === 'Pending' && (
-                        <button onClick={() => handleAccept(delivery.id)} className="px-3 py-1 bg-[#FFC000] text-black text-xs font-bold rounded-lg hover:bg-[#E5AC00] transition-colors">
+                        <button onClick={(e) => { e.stopPropagation(); handleAccept(delivery.id); }} className="px-3 py-1 bg-[#FFC000] text-black text-xs font-bold rounded-lg hover:bg-[#E5AC00] transition-colors">
                           Accept
                         </button>
                       )}
-                      {delivery.status === 'In Transit' && delivery.courier_id && (
-                        <button onClick={() => handleDeliver(delivery.id)} className="px-3 py-1 bg-green-500 text-black text-xs font-bold rounded-lg hover:bg-green-400 transition-colors">
+                      {delivery.courier_id === currentUserId && (
+                        <button onClick={(e) => { e.stopPropagation(); handleVerify(delivery.id); }} className="px-3 py-1 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-400 transition-colors flex items-center gap-1">
+                          <Phone size={12} /> Call
+                        </button>
+                      )}
+                      {delivery.status === 'In Transit' && delivery.courier_id === currentUserId && (
+                        <button onClick={(e) => { e.stopPropagation(); handleDeliver(delivery.id); }} className="px-3 py-1 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-500 transition-colors">
                           Delivered
                         </button>
                       )}

@@ -23,7 +23,11 @@ const NewShipment = () => {
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      setFormData({ ...formData, receiverImage: URL.createObjectURL(file) });
+      const reader = new FileReader();
+      reader.onload = () => {
+        setFormData((prev) => ({ ...prev, receiverImage: reader.result }));
+      };
+      reader.readAsDataURL(file);
     }
   };
 
