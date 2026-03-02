@@ -13,12 +13,23 @@ class ShipmentCreate(BaseModel):
     package_type: Optional[str] = "Standard"
     description: Optional[str] = None
     image_url: Optional[str] = None
+    video_url: Optional[str] = None
+    media_type: Optional[str] = None
     voice_verification_required: Optional[bool] = False
 
 class ShipmentUpdate(BaseModel):
     status: Optional[str] = None
     image_url: Optional[str] = None
+    video_url: Optional[str] = None
+    media_type: Optional[str] = None
     voice_verification_required: Optional[bool] = None
+    receiver_name: Optional[str] = None
+    receiver_phone: Optional[str] = None
+    delivery_address: Optional[str] = None
+    package_weight: Optional[float] = None
+    package_type: Optional[str] = None
+    description: Optional[str] = None
+    courier_id: Optional[int] = None
 
 class ShipmentResponse(BaseModel):
     id: int
@@ -36,6 +47,8 @@ class ShipmentResponse(BaseModel):
     description: Optional[str] = None
     status: str
     image_url: Optional[str] = None
+    video_url: Optional[str] = None
+    media_type: Optional[str] = None
     voice_verification_required: Optional[bool] = False
     voice_verification_status: Optional[str] = None
     created_at: datetime

@@ -8,13 +8,18 @@ import CustomerDashboard from './pages/CustomerDashboard';
 import CustomerProfile from './pages/CustomerProfile'; // Import the new file
 import NewShipment from './components/NewShipment';
 import EditShipment from './components/EditShipment';
+import ShipmentDetails from './pages/ShipmentDetails';
 import VoiceEnrollment from './pages/VoiceEnrollment';
 import VoiceVerification from './pages/VoiceVerification';
+import VideoCall from './pages/VideoCall';
+import VerificationCapture from './pages/VerificationCapture';
+import IncomingCallOverlay from './components/IncomingCallOverlay';
 
 function App() {
   return (
     <BrowserRouter>
       <Navbar />
+      <IncomingCallOverlay />
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
@@ -22,9 +27,12 @@ function App() {
         <Route path="/dashboard" element={<CustomerDashboard />} />
         <Route path="/profile" element={<CustomerProfile />} />
         <Route path="/new-shipment" element={<NewShipment />} />
+        <Route path="/shipment/:id" element={<ShipmentDetails />} />
         <Route path="/edit-shipment/:id" element={<EditShipment />} />
         <Route path="/voice-enrollment" element={<VoiceEnrollment />} />
         <Route path="/verify/:verificationId" element={<VoiceVerification />} />
+        <Route path="/verification/:token" element={<VerificationCapture />} />
+        <Route path="/video-call/:roomId" element={<VideoCall />} />
       </Routes>
     </BrowserRouter>
   );

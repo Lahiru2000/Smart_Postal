@@ -21,6 +21,7 @@ const Login = () => {
       const res = await loginUser({ ...formData, role: 'courier' });
       localStorage.setItem('token', res.data.access_token);
       localStorage.setItem('role', res.data.role);
+      if (res.data.user) localStorage.setItem('user', JSON.stringify(res.data.user));
       navigate('/dashboard');
     } catch (err) {
       const detail = err.response?.data?.detail;

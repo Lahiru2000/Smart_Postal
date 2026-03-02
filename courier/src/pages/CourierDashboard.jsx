@@ -194,7 +194,7 @@ const CourierDashboard = () => {
             ) : (
             <div className="divide-y divide-[#333333]">
               {shipments.map((delivery) => (
-                <div key={delivery.id} className="p-5 hover:bg-white/5 transition-colors">
+                <div key={delivery.id} onClick={() => navigate(`/shipment/${delivery.id}`)} className="p-5 hover:bg-white/5 transition-colors cursor-pointer">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">
                       <div className="p-2 bg-[#252525] rounded-lg text-[#FFC000]">
@@ -212,7 +212,7 @@ const CourierDashboard = () => {
 
                       {/* Pending → Accept */}
                       {delivery.status === 'Pending' && (
-                        <button onClick={() => handleAccept(delivery.id)} className="px-3 py-1 bg-[#FFC000] text-black text-xs font-bold rounded-lg hover:bg-[#E5AC00] transition-colors">
+                        <button onClick={(e) => { e.stopPropagation(); handleAccept(delivery.id); }} className="px-3 py-1 bg-[#FFC000] text-black text-xs font-bold rounded-lg hover:bg-[#E5AC00] transition-colors">
                           Accept
                         </button>
                       )}
@@ -223,7 +223,7 @@ const CourierDashboard = () => {
                           {/* Send Voice Verification: show for ANY In-Transit shipment that isn't already approved */}
                           {delivery.voice_verification_status !== 'approved' && (
                             <button
-                              onClick={() => handleSendVoiceVerification(delivery.id)}
+                              onClick={(e) => { e.stopPropagation(); handleSendVoiceVerification(delivery.id); }}
                               disabled={verificationLoading[delivery.id]}
                               className="px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded-lg hover:bg-purple-500 transition-colors flex items-center gap-1.5 disabled:opacity-50"
                             >
@@ -241,7 +241,7 @@ const CourierDashboard = () => {
 
                           {/* Deliver button */}
                           <button
-                            onClick={() => handleDeliver(delivery.id)}
+                            onClick={(e) => { e.stopPropagation(); handleDeliver(delivery.id); }}
                             className="px-3 py-1 bg-green-500 text-black text-xs font-bold rounded-lg hover:bg-green-400 transition-colors"
                           >
                             Delivered

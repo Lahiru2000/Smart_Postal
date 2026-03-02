@@ -37,4 +37,22 @@ def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Access denied. This account is not registered as a " + user_credentials.role.value + ".")
     
     access_token = auth.create_access_token(data={"sub": user.email, "role": user.role.value})
-    return {"access_token": access_token, "token_type": "bearer", "role": user.role.value}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": user.role.value,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "phone": user.phone,
+            "role": user.role.value,
+        },
+    }
+
+
+@router.get("/profile", response_model=UserResponse)
+def get_profile(
+    current_user: User = Depends(auth.get_current_user),
+):
+    return current_user

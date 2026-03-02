@@ -1,7 +1,10 @@
-import React, { useState } from 'react';
-import { Package, MapPin, User, Upload, ArrowRight, ArrowLeft, CheckCircle, Camera, X, Shield } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import {
+  Package, MapPin, User, Upload, ArrowRight, ArrowLeft, CheckCircle,
+  Camera, X, Shield, Video, Image, StopCircle, RotateCcw, Play, Pause
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { createShipment } from '../services/api';
+import { createShipment, uploadShipmentMedia } from '../services/api';
 
 const NewShipment = () => {
   const navigate = useNavigate();
@@ -12,9 +15,27 @@ const NewShipment = () => {
     senderName: '', senderPhone: '', senderAddress: '',
     receiverName: '', receiverPhone: '', receiverAddress: '',
     packageWeight: '', packageType: 'Standard', description: '',
-    receiverImage: null, // To store the uploaded image
-    voiceVerification: false // Enable voice verification on delivery
+    receiverImage: null,
+    receiverImageFile: null,  // actual File for image upload
+    receiverVideo: null,      // blob URL for video
+    receiverVideoFile: null,  // actual File/Blob for upload
+    mediaType: null,           // 'image' | 'video'
+    voiceVerification: false,
   });
+
+  // Media mode: null | 'image' | 'uploadVideo' | 'recordVideo'
+  const [mediaMode, setMediaMode] = useState(null);
+
+  // Camera recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordDuration, setRecordDuration] = useState(0);
+  const [cameraReady, setCameraReady] = useState(false);
+
+  const cameraVideoRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const timerRef = useRef(null);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -24,13 +45,110 @@ const NewShipment = () => {
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      setFormData({ ...formData, receiverImage: URL.createObjectURL(file) });
+      setFormData({ ...formData, receiverImage: URL.createObjectURL(file), receiverImageFile: file, receiverVideo: null, receiverVideoFile: null, mediaType: 'image' });
+      setMediaMode(null);
     }
   };
 
-  const removeImage = () => {
-    setFormData({ ...formData, receiverImage: null });
+  const handleVideoUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setFormData({ ...formData, receiverVideo: URL.createObjectURL(file), receiverVideoFile: file, receiverImage: null, mediaType: 'video' });
+      setMediaMode(null);
+    }
   };
+
+  const removeMedia = () => {
+    stopCamera();
+    setFormData({ ...formData, receiverImage: null, receiverImageFile: null, receiverVideo: null, receiverVideoFile: null, mediaType: null });
+    setMediaMode(null);
+    setIsRecording(false);
+    setRecordDuration(0);
+    setCameraReady(false);
+  };
+
+  // ── Camera helpers ──────────────────────────────────────
+  const startCamera = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      streamRef.current = stream;
+      if (cameraVideoRef.current) {
+        cameraVideoRef.current.srcObject = stream;
+      }
+      setCameraReady(true);
+    } catch (err) {
+      alert('Could not access camera/microphone. Please allow permissions.');
+      setMediaMode(null);
+    }
+  }, []);
+
+  const stopCamera = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setCameraReady(false);
+  }, []);
+
+  const startRecording = () => {
+    chunksRef.current = [];
+    const stream = streamRef.current;
+    if (!stream) return;
+
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      ? 'video/webm;codecs=vp9,opus'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+        ? 'video/webm;codecs=vp8,opus'
+        : 'video/webm';
+
+    const recorder = new MediaRecorder(stream, { mimeType });
+    mediaRecorderRef.current = recorder;
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      setFormData(prev => ({ ...prev, receiverVideo: url, receiverVideoFile: blob, receiverImage: null, mediaType: 'video' }));
+      stopCamera();
+      setMediaMode(null);
+      setIsRecording(false);
+      setRecordDuration(0);
+    };
+
+    recorder.start(300);
+    setIsRecording(true);
+    setRecordDuration(0);
+    timerRef.current = setInterval(() => setRecordDuration(d => d + 1), 1000);
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  // Start camera when recordVideo mode selected
+  useEffect(() => {
+    if (mediaMode === 'recordVideo') {
+      startCamera();
+    }
+    return () => {
+      if (mediaMode === 'recordVideo') stopCamera();
+    };
+  }, [mediaMode, startCamera, stopCamera]);
+
+  const formatTime = (s) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 
   const nextStep = () => setStep(step + 1);
   const prevStep = () => setStep(step - 1);
@@ -39,6 +157,27 @@ const NewShipment = () => {
     setLoading(true);
     setError('');
     try {
+      let imageUrl = null;
+      let videoUrl = null;
+      let mediaTypeVal = null;
+
+      // Upload image file if present
+      if (formData.mediaType === 'image' && formData.receiverImageFile) {
+        const uploadRes = await uploadShipmentMedia(formData.receiverImageFile, 'image');
+        imageUrl = uploadRes.data.url;
+        mediaTypeVal = 'image';
+      }
+
+      // Upload video file if present
+      if (formData.mediaType === 'video' && formData.receiverVideoFile) {
+        const file = formData.receiverVideoFile instanceof Blob && !(formData.receiverVideoFile instanceof File)
+          ? new File([formData.receiverVideoFile], 'recorded_video.webm', { type: formData.receiverVideoFile.type || 'video/webm' })
+          : formData.receiverVideoFile;
+        const uploadRes = await uploadShipmentMedia(file, 'video');
+        videoUrl = uploadRes.data.url;
+        mediaTypeVal = 'video';
+      }
+
       const payload = {
         sender_name: formData.senderName,
         sender_phone: formData.senderPhone,
@@ -49,7 +188,9 @@ const NewShipment = () => {
         package_weight: formData.packageWeight ? parseFloat(formData.packageWeight) : null,
         package_type: formData.packageType,
         description: formData.description || null,
-        image_url: formData.receiverImage || null,
+        image_url: imageUrl,
+        video_url: videoUrl,
+        media_type: mediaTypeVal,
         voice_verification_required: formData.voiceVerification,
       };
       await createShipment(payload);
@@ -175,7 +316,7 @@ const NewShipment = () => {
             </div>
           )}
 
-          {/* Step 4: Verification (Image Upload) */}
+          {/* Step 4: Verification (Image / Video Upload / Record) */}
           {step === 4 && (
             <div className="space-y-6 animate-fadeIn">
               <h2 className="text-2xl font-bold text-white flex items-center gap-3">
@@ -184,7 +325,7 @@ const NewShipment = () => {
               </h2>
               
               <p className="text-gray-400 text-sm leading-relaxed bg-black/50 p-4 rounded-xl border border-[#333333]">
-                <strong className="text-[#FFC000]">Secure Delivery:</strong> Please upload a photo of the authorized receiver (Owner or Neighbor) or the specific location (e.g., front door) to help our driver verify the correct delivery target.
+                <strong className="text-[#FFC000]">Secure Delivery:</strong> Upload a photo or video of the authorized receiver, or use your camera to record a short video with audio for identity verification.
               </p>
 
               {/* Voice Verification Toggle */}
@@ -218,34 +359,121 @@ const NewShipment = () => {
                 )}
               </div>
 
+              {/* ── Media Section ───────────────────────────────── */}
               <div className="mt-4">
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Upload Reference Image (Owner/Neighbor)</label>
-                
-                {!formData.receiverImage ? (
-                  <label className="flex flex-col items-center justify-center w-full h-64 border-2 border-[#333333] border-dashed rounded-2xl cursor-pointer bg-black hover:border-[#FFC000] hover:bg-[#FFC000]/5 transition-all group">
-                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                      <div className="p-4 bg-[#1A1A1A] rounded-full mb-3 group-hover:scale-110 transition-transform">
-                        <Upload className="w-8 h-8 text-gray-400 group-hover:text-[#FFC000]" />
-                      </div>
-                      <p className="mb-2 text-sm text-gray-400"><span className="font-bold text-[#FFC000]">Click to upload</span> or drag and drop</p>
-                      <p className="text-xs text-gray-500">SVG, PNG, JPG or GIF (MAX. 5MB)</p>
-                    </div>
-                    <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
-                  </label>
-                ) : (
-                  <div className="relative w-full h-64 rounded-2xl overflow-hidden border border-[#333333] group">
-                    <img src={formData.receiverImage} alt="Receiver Reference" className="w-full h-full object-cover" />
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3 block">Upload Reference Media (Owner/Neighbor)</label>
+
+                {/* Already have media uploaded/recorded → show preview */}
+                {(formData.receiverImage || formData.receiverVideo) && !mediaMode ? (
+                  <div className="relative w-full rounded-2xl overflow-hidden border border-[#333333] group">
+                    {formData.mediaType === 'image' && formData.receiverImage && (
+                      <img src={formData.receiverImage} alt="Receiver Reference" className="w-full h-64 object-cover" />
+                    )}
+                    {formData.mediaType === 'video' && formData.receiverVideo && (
+                      <video src={formData.receiverVideo} controls className="w-full h-64 object-cover bg-black" />
+                    )}
                     <button 
-                      onClick={removeImage}
-                      className="absolute top-4 right-4 p-2 bg-red-500 text-white rounded-lg shadow-lg hover:bg-red-600 transition-colors"
+                      onClick={removeMedia}
+                      className="absolute top-4 right-4 p-2 bg-red-500 text-white rounded-lg shadow-lg hover:bg-red-600 transition-colors z-10"
                     >
                       <X size={20} />
                     </button>
                     <div className="absolute bottom-0 left-0 right-0 bg-black/80 backdrop-blur-sm p-3 text-center">
-                        <p className="text-[#FFC000] font-bold text-sm flex items-center justify-center gap-2">
-                            <CheckCircle size={16} /> Image Uploaded Successfully
-                        </p>
+                      <p className="text-[#FFC000] font-bold text-sm flex items-center justify-center gap-2">
+                        <CheckCircle size={16} /> {formData.mediaType === 'image' ? 'Image' : 'Video'} Uploaded Successfully
+                      </p>
                     </div>
+                  </div>
+                ) : mediaMode === 'recordVideo' ? (
+                  /* ── Camera recording view ── */
+                  <div className="relative w-full rounded-2xl overflow-hidden border border-[#333333] bg-black">
+                    <video
+                      ref={cameraVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-72 object-cover"
+                    />
+
+                    {/* Recording indicator */}
+                    {isRecording && (
+                      <div className="absolute top-4 left-4 flex items-center gap-2 bg-red-600/90 px-3 py-1.5 rounded-full">
+                        <div className="w-2.5 h-2.5 bg-white rounded-full animate-pulse" />
+                        <span className="text-white text-xs font-bold">{formatTime(recordDuration)}</span>
+                      </div>
+                    )}
+
+                    {/* Camera controls */}
+                    <div className="absolute bottom-0 left-0 right-0 bg-black/80 backdrop-blur-sm p-4 flex items-center justify-center gap-4">
+                      {!isRecording ? (
+                        <>
+                          <button
+                            onClick={() => { setMediaMode(null); stopCamera(); }}
+                            className="px-4 py-2 text-gray-400 hover:text-white text-sm font-bold transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={startRecording}
+                            disabled={!cameraReady}
+                            className="px-6 py-2.5 bg-red-500 hover:bg-red-400 text-white font-bold rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50"
+                          >
+                            <div className="w-3 h-3 bg-white rounded-full" />
+                            Start Recording
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={stopRecording}
+                          className="px-6 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl flex items-center gap-2 transition-colors animate-pulse"
+                        >
+                          <StopCircle size={18} />
+                          Stop Recording ({formatTime(recordDuration)})
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* ── Choose method (3 options) ── */
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    {/* Upload Image */}
+                    <label className="flex flex-col items-center justify-center h-52 border-2 border-[#333333] border-dashed rounded-2xl cursor-pointer bg-black hover:border-[#FFC000] hover:bg-[#FFC000]/5 transition-all group">
+                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                        <div className="p-3 bg-[#1A1A1A] rounded-full mb-3 group-hover:scale-110 transition-transform">
+                          <Image className="w-7 h-7 text-gray-400 group-hover:text-[#FFC000]" />
+                        </div>
+                        <p className="text-sm font-bold text-[#FFC000] mb-1">Upload Image</p>
+                        <p className="text-xs text-gray-500">PNG, JPG, GIF (5MB)</p>
+                      </div>
+                      <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                    </label>
+
+                    {/* Upload Video */}
+                    <label className="flex flex-col items-center justify-center h-52 border-2 border-[#333333] border-dashed rounded-2xl cursor-pointer bg-black hover:border-purple-400 hover:bg-purple-500/5 transition-all group">
+                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                        <div className="p-3 bg-[#1A1A1A] rounded-full mb-3 group-hover:scale-110 transition-transform">
+                          <Upload className="w-7 h-7 text-gray-400 group-hover:text-purple-400" />
+                        </div>
+                        <p className="text-sm font-bold text-purple-400 mb-1">Upload Video</p>
+                        <p className="text-xs text-gray-500">MP4, WebM, MOV (100MB)</p>
+                      </div>
+                      <input type="file" className="hidden" accept="video/mp4,video/webm,video/quicktime,video/x-matroska" onChange={handleVideoUpload} />
+                    </label>
+
+                    {/* Record Video */}
+                    <button
+                      type="button"
+                      onClick={() => setMediaMode('recordVideo')}
+                      className="flex flex-col items-center justify-center h-52 border-2 border-[#333333] border-dashed rounded-2xl cursor-pointer bg-black hover:border-cyan-400 hover:bg-cyan-500/5 transition-all group"
+                    >
+                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                        <div className="p-3 bg-[#1A1A1A] rounded-full mb-3 group-hover:scale-110 transition-transform">
+                          <Video className="w-7 h-7 text-gray-400 group-hover:text-cyan-400" />
+                        </div>
+                        <p className="text-sm font-bold text-cyan-400 mb-1">Record Video</p>
+                        <p className="text-xs text-gray-500">Camera + Microphone</p>
+                      </div>
+                    </button>
                   </div>
                 )}
               </div>
