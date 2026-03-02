@@ -61,7 +61,7 @@ def fuse_detection_scores(
             prosodic_score * w_pros
         ) / total_w
         # Conservative bias when external detector is missing
-        fused += 0.15
+        fused += 0.10
         logger.warning(
             "External AI detector unavailable — applying conservative bias. "
             "local fused=%.4f (spectral=%.4f, prosodic=%.4f)",
@@ -100,8 +100,8 @@ def fuse_detection_scores(
         decision_reason = "high_uncertainty"
 
     # Decision thresholds — lower the bar when external is missing
-    ai_threshold_high = 0.55 if not external_available else 0.65
-    ai_threshold_low = 0.30 if not external_available else 0.35
+    ai_threshold_high = 0.60 if not external_available else 0.72
+    ai_threshold_low = 0.30 if not external_available else 0.40
 
     if fused < ai_threshold_low:
         ai_generated = False
@@ -116,7 +116,7 @@ def fuse_detection_scores(
             decision_reason = "high_confidence_ai_pattern"
         message = f"AI-generated voice likely (ensemble confidence: {fused:.0%})"
     else:
-        ai_generated = fused >= 0.5
+        ai_generated = fused >= 0.55
         risk_tier = "medium"
         step_up = True
         if not decision_reason:

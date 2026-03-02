@@ -32,10 +32,13 @@ from app.services.voice_pipeline import analyze_voice_sample
 from app.services.replay_guard import replay_guard
 from app.services.speaker_encoder import (
     extract_speaker_embedding,
+    extract_full_voiceprint,
     compare_enrollment_samples,
     verify_speaker,
     centroid,
+    build_enriched_profile,
     SPEAKER_EMBEDDING_DIM,
+    MFCC_FEATURE_DIM,
 )
 from app.services.audio_utils import validate_upload
 from app.services.voice_config import (
@@ -270,8 +273,10 @@ async def submit_enrollment_sample(
             detail="AI-generated or suspicious voice detected. Enrollment denied.",
         )
 
-    # Extract speaker embedding using Resemblyzer (256-dim neural speaker identity)
-    voice_vector = await extract_speaker_embedding(audio_bytes, audio.filename or "audio.mp3")
+    # Extract full voiceprint (256-dim neural embedding + 47-dim MFCC features)
+    voiceprint = await extract_full_voiceprint(audio_bytes, audio.filename or "audio.mp3")
+    voice_vector = voiceprint["embedding"]
+    mfcc_vector = voiceprint["mfcc"]
 
     # Cross-sample speaker verification (from sample 2 onwards)
     existing_samples = (
@@ -300,8 +305,8 @@ async def submit_enrollment_sample(
                 detail="Enrollment samples do not match the same speaker. Enrollment denied.",
             )
 
-    # Save successful sample
-    sample_analysis = {**analysis, "voice_vector": voice_vector}
+    # Save successful sample (store both embedding and MFCC features)
+    sample_analysis = {**analysis, "voice_vector": voice_vector, "mfcc_vector": mfcc_vector}
     sample = VoiceEnrollmentSample(
         enrollment_id=enrollment.id,
         sample_number=enrollment.verified_samples + 1,
@@ -320,21 +325,29 @@ async def submit_enrollment_sample(
         enrollment.status = "completed"
         enrollment.completed_at = datetime.utcnow()
 
-        # Create voice profile by averaging all sample vectors
-        all_vectors = existing_vectors + [voice_vector]
-        profile_vector = centroid(all_vectors) if all_vectors else voice_vector
+        # Gather all sample embeddings and MFCC features
+        all_embeddings = existing_vectors + [voice_vector]
+        all_mfccs = [
+            s.analysis_details.get("mfcc_vector", [])
+            for s in existing_samples
+            if s.analysis_details and "mfcc_vector" in s.analysis_details
+            and len(s.analysis_details.get("mfcc_vector", [])) == MFCC_FEATURE_DIM
+        ] + [mfcc_vector]
+
+        # Build enriched profile with multi-probe data and adaptive thresholds
+        profile_data = build_enriched_profile(all_embeddings, all_mfccs)
 
         # Upsert voice profile
         profile = db.query(VoiceProfile).filter(VoiceProfile.user_id == current_user.id).first()
         if profile:
-            profile.voice_vector = profile_vector
+            profile.voice_vector = profile_data
             profile.sample_count = enrollment.verified_samples
             profile.is_active = True
             profile.updated_at = datetime.utcnow()
         else:
             profile = VoiceProfile(
                 user_id=current_user.id,
-                voice_vector=profile_vector,
+                voice_vector=profile_data,
                 sample_count=enrollment.verified_samples,
                 is_active=True,
             )
@@ -526,12 +539,27 @@ async def complete_delivery_verification(
             "analysis": analysis,
         }
 
-    # Speaker verification — compare with enrolled profile using Resemblyzer embeddings
-    verification_vector = await extract_speaker_embedding(audio_bytes, audio.filename or "audio.mp3")
-    profile_vector = profile.voice_vector or []
+    # Speaker verification — extract full voiceprint and compare with enrolled profile
+    voiceprint = await extract_full_voiceprint(audio_bytes, audio.filename or "audio.mp3")
+    verification_vector = voiceprint["embedding"]
+    verification_mfcc = voiceprint["mfcc"]
+    profile_data = profile.voice_vector
 
-    # Check for outdated profile vector format
-    if not profile_vector or len(profile_vector) != SPEAKER_EMBEDDING_DIM:
+    # Check for outdated profile format (must be enriched v2 dict or 256-dim list)
+    if not profile_data:
+        verification.status = "failed"
+        verification.delivery_approved = False
+        verification.analysis_details = {"failure_reason": "profile_needs_reenrollment"}
+        verification.completed_at = datetime.utcnow()
+        _update_shipment_voice_status(db, verification.shipment_id, "failed")
+        db.commit()
+        raise HTTPException(
+            status_code=400,
+            detail="Customer's voice profile is missing. Please re-enroll for voice authentication.",
+        )
+
+    # Validate profile format — must be v2 dict or legacy 256-dim list
+    if isinstance(profile_data, list) and len(profile_data) != SPEAKER_EMBEDDING_DIM:
         verification.status = "failed"
         verification.delivery_approved = False
         verification.analysis_details = {"failure_reason": "profile_needs_reenrollment"}
@@ -543,7 +571,7 @@ async def complete_delivery_verification(
             detail="Customer's voice profile uses an outdated format. Please re-enroll for voice authentication.",
         )
 
-    speaker_result = verify_speaker(verification_vector, profile_vector)
+    speaker_result = verify_speaker(verification_vector, profile_data, verification_mfcc=verification_mfcc)
 
     if not speaker_result["match"]:
         verification.status = "failed"
