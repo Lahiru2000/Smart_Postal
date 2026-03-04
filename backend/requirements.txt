@@ -16,3 +16,28 @@ resemblyzer>=0.1.3
 librosa>=0.10.0
 soundfile>=0.12.0
 webrtcvad-wheels>=2.0.10
+
+fastapi
+uvicorn
+pydantic
+mysql-connector-python
+python-multipart
+numpy
+scikit-learn
+pandas
+xgboost
+scipy
+
+# Core Web Framework
+fastapi
+uvicorn
+
+# Database
+mysql-connector-python
+
+# Data Validation
+pydantic
+
+# Additional useful packages
+python-multipart  # For file uploads
+python-json-logger # For structured logging
