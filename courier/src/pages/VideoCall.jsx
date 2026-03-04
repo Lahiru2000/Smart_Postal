@@ -2,9 +2,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Phone, PhoneOff, Mic, MicOff, Video, VideoOff,
-  RotateCcw, Maximize2, Minimize2, User
+  RotateCcw, Maximize2, Minimize2, User, Shield, CheckCircle, XCircle, Loader2, AlertTriangle
 } from 'lucide-react';
-import { getVideoCall, endVideoCall, getVideoCallWsUrl } from '../services/api';
+import { getVideoCall, endVideoCall, getVideoCallWsUrl, verifyFaceDuringCall } from '../services/api';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -32,6 +32,11 @@ const VideoCall = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Face verification state
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [verifyError, setVerifyError] = useState('');
 
   // Refs
   const localVideoRef = useRef(null);
@@ -346,6 +351,36 @@ const VideoCall = () => {
     }
   };
 
+  // ── Live Face Verification ─────────────────────────
+  const handleVerifyFace = async () => {
+    if (!remoteVideoRef.current || !hasRemoteStream) return;
+    setVerifyLoading(true);
+    setVerifyError('');
+    setVerifyResult(null);
+
+    try {
+      // Capture a frame from the remote video element
+      const video = remoteVideoRef.current;
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const base64 = canvas.toDataURL('image/jpeg', 0.9);
+
+      const res = await verifyFaceDuringCall(roomId, base64);
+      setVerifyResult(res.data);
+
+      // Auto-hide result after 15 seconds
+      setTimeout(() => setVerifyResult(null), 15000);
+    } catch (err) {
+      setVerifyError(err.response?.data?.detail || 'Face verification failed');
+      setTimeout(() => setVerifyError(''), 8000);
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
   const formatDuration = (s) => {
     const m = Math.floor(s / 60).toString().padStart(2, '0');
     const sec = (s % 60).toString().padStart(2, '0');
@@ -436,10 +471,82 @@ const VideoCall = () => {
         )}
       </div>
 
+      {/* Face Verification Result Overlay */}
+      {verifyResult && (
+        <div className="absolute top-20 left-4 z-30 animate-in slide-in-from-left">
+          <div className={`rounded-2xl border-2 p-4 backdrop-blur-xl shadow-2xl max-w-xs ${
+            verifyResult.success
+              ? verifyResult.is_match
+                ? 'bg-green-900/80 border-green-500/60'
+                : 'bg-red-900/80 border-red-500/60'
+              : 'bg-yellow-900/80 border-yellow-500/60'
+          }`}>
+            <div className="flex items-center gap-3 mb-3">
+              {verifyResult.success ? (
+                verifyResult.is_match
+                  ? <CheckCircle className="w-8 h-8 text-green-400" />
+                  : <XCircle className="w-8 h-8 text-red-400" />
+              ) : (
+                <AlertTriangle className="w-8 h-8 text-yellow-400" />
+              )}
+              <div>
+                <p className={`font-bold text-lg ${
+                  verifyResult.success
+                    ? verifyResult.is_match ? 'text-green-300' : 'text-red-300'
+                    : 'text-yellow-300'
+                }`}>
+                  {verifyResult.success ? verifyResult.verdict : 'Detection Failed'}
+                </p>
+                {verifyResult.success && (
+                  <p className="text-xs text-gray-300">
+                    {verifyResult.confidence} confidence · {verifyResult.reference_type} ref
+                  </p>
+                )}
+              </div>
+            </div>
+            {verifyResult.success && (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-gray-300">Face Match</span>
+                  <span className={`font-bold ${
+                    verifyResult.is_match ? 'text-green-400' : 'text-red-400'
+                  }`}>{verifyResult.face_score}%</span>
+                </div>
+                <div className="w-full bg-black/40 rounded-full h-2">
+                  <div
+                    className={`h-2 rounded-full transition-all duration-500 ${
+                      verifyResult.is_match ? 'bg-green-500' : 'bg-red-500'
+                    }`}
+                    style={{ width: `${Math.min(verifyResult.face_score, 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            {verifyResult.error && (
+              <p className="text-yellow-300 text-sm mt-1">{verifyResult.error}</p>
+            )}
+            <button
+              onClick={() => setVerifyResult(null)}
+              className="mt-3 text-xs text-gray-400 hover:text-white transition-colors"
+            >Dismiss</button>
+          </div>
+        </div>
+      )}
+
+      {/* Verify Error Toast */}
+      {verifyError && (
+        <div className="absolute top-20 left-4 z-30 bg-red-900/80 border border-red-500/40 text-red-300 rounded-xl px-4 py-3 text-sm max-w-xs backdrop-blur-xl">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            {verifyError}
+          </div>
+        </div>
+      )}
+
       {/* Bottom Controls */}
       <div className="relative z-10 mt-auto">
         <div className="bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-16 pb-8 px-4">
-          <div className="flex items-center justify-center gap-4 max-w-md mx-auto">
+          <div className="flex items-center justify-center gap-3 max-w-lg mx-auto">
             <button onClick={toggleMute}
               className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
                 isMuted ? 'bg-red-500/20 border-2 border-red-500/40 text-red-400' : 'bg-white/10 border-2 border-white/20 text-white hover:bg-white/20'
@@ -452,6 +559,24 @@ const VideoCall = () => {
                 isCameraOff ? 'bg-red-500/20 border-2 border-red-500/40 text-red-400' : 'bg-white/10 border-2 border-white/20 text-white hover:bg-white/20'
               }`} title={isCameraOff ? 'Turn camera on' : 'Turn camera off'}>
               {isCameraOff ? <VideoOff className="w-6 h-6" /> : <Video className="w-6 h-6" />}
+            </button>
+
+            {/* Verify Identity Button */}
+            <button
+              onClick={handleVerifyFace}
+              disabled={verifyLoading || !hasRemoteStream || callStatus !== 'active'}
+              className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
+                verifyLoading
+                  ? 'bg-[#FFC000]/30 border-2 border-[#FFC000]/50 text-[#FFC000]'
+                  : verifyResult?.is_match
+                    ? 'bg-green-500/20 border-2 border-green-500/40 text-green-400'
+                    : 'bg-[#FFC000]/10 border-2 border-[#FFC000]/30 text-[#FFC000] hover:bg-[#FFC000]/20'
+              } disabled:opacity-30 disabled:cursor-not-allowed`}
+              title="Verify Identity"
+            >
+              {verifyLoading
+                ? <Loader2 className="w-6 h-6 animate-spin" />
+                : <Shield className="w-6 h-6" />}
             </button>
 
             <button onClick={handleHangUp}

@@ -5,7 +5,7 @@ import {
   CheckCircle, Box, FileText, Shield, Scale, Tag, Calendar,
   Copy, CheckCheck, Send, RefreshCw, X, Navigation, ExternalLink, Video, Link2
 } from 'lucide-react';
-import { getShipmentById, updateShipment, startVoiceVerification, getVerificationStatus, initiateVideoCall, generateVerificationLink, getVerificationLinkStatus } from '../services/api';
+import { getShipmentById, updateShipment, startVoiceVerification, getVerificationStatus, initiateVideoCall, generateVerificationLink, getVerificationLinkStatus, getVerificationLinks } from '../services/api';
 
 const ShipmentDetails = () => {
   const { id } = useParams();
@@ -28,9 +28,29 @@ const ShipmentDetails = () => {
   const [vLinkLoading, setVLinkLoading] = useState(false);
   const vLinkPollRef = useRef(null);
 
+  // Latest AI verification result (shown on the page)
+  const [latestVerification, setLatestVerification] = useState(null);
+
   useEffect(() => {
     fetchShipment();
   }, [id]);
+
+  // Fetch latest verification links for this shipment
+  useEffect(() => {
+    if (!shipment) return;
+    const fetchLinks = async () => {
+      try {
+        const res = await getVerificationLinks(shipment.id);
+        const links = res.data || [];
+        // Find the latest link that has AI results
+        const withResult = links.find(l => l.verdict || l.status === 'verified' || l.status === 'processing' || l.status === 'completed');
+        if (withResult) setLatestVerification(withResult);
+      } catch { /* ignore */ }
+    };
+    fetchLinks();
+    const interval = setInterval(fetchLinks, 6000);
+    return () => clearInterval(interval);
+  }, [shipment?.id]);
 
   useEffect(() => {
     return () => {
@@ -158,9 +178,22 @@ const ShipmentDetails = () => {
     vLinkPollRef.current = setInterval(async () => {
       try {
         const res = await getVerificationLinkStatus(token);
-        const status = res.data.status;
-        setVLinkModal(prev => prev ? { ...prev, status } : prev);
-        if (['completed', 'expired', 'failed'].includes(status)) {
+        const data = res.data;
+        setVLinkModal(prev => prev ? {
+          ...prev,
+          status: data.status,
+          ai_match: data.ai_match,
+          face_score: data.face_score,
+          voice_score: data.voice_score,
+          combined_score: data.combined_score,
+          confidence: data.confidence,
+          verdict: data.verdict,
+          face_available: data.face_available,
+          voice_available: data.voice_available,
+          ai_error: data.ai_error,
+        } : prev);
+        // Stop polling when AI result is ready or link expired/failed
+        if (['verified', 'expired', 'failed'].includes(data.status)) {
           clearInterval(vLinkPollRef.current);
           vLinkPollRef.current = null;
         }
@@ -506,6 +539,97 @@ const ShipmentDetails = () => {
           )}
         </div>
 
+        {/* ═══ AI Verification Result Card ═══ */}
+        {latestVerification && (latestVerification.verdict || latestVerification.status === 'processing' || latestVerification.status === 'completed') && (
+          <div className={`rounded-2xl border p-6 mb-6 ${
+            latestVerification.verdict
+              ? (latestVerification.ai_match ? 'bg-green-500/5 border-green-500/30' : 'bg-red-500/5 border-red-500/30')
+              : 'bg-blue-500/5 border-blue-500/30'
+          }`}>
+            <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+              <Shield className="w-4 h-4 text-cyan-400" />
+              AI Identity Verification Result
+            </h2>
+
+            {/* Processing state */}
+            {!latestVerification.verdict && (
+              <div className="flex items-center gap-3 text-blue-400">
+                <RefreshCw className="w-5 h-5 animate-spin" />
+                <span className="font-bold">AI is analyzing face and voice...</span>
+              </div>
+            )}
+
+            {/* Results */}
+            {latestVerification.verdict && (
+              <div className="space-y-4">
+                {/* Verdict + Confidence */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {latestVerification.ai_match
+                      ? <CheckCircle className="w-8 h-8 text-green-400" />
+                      : <X className="w-8 h-8 text-red-400" />
+                    }
+                    <div>
+                      <p className={`text-xl font-bold ${latestVerification.ai_match ? 'text-green-400' : 'text-red-400'}`}>
+                        {latestVerification.verdict}
+                      </p>
+                      <p className="text-gray-500 text-sm">Combined Score: {(latestVerification.combined_score * 100).toFixed(1)}%</p>
+                    </div>
+                  </div>
+                  <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${
+                    latestVerification.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                    latestVerification.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-red-500/20 text-red-400'
+                  }`}>
+                    {latestVerification.confidence}
+                  </span>
+                </div>
+
+                {/* Score Bars */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-black/30 rounded-xl p-4 border border-[#333333]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-gray-500 font-bold uppercase">Face</span>
+                      {latestVerification.face_available
+                        ? <span className="text-white font-bold">{(latestVerification.face_score * 100).toFixed(1)}%</span>
+                        : <span className="text-gray-600 text-xs">N/A</span>
+                      }
+                    </div>
+                    {latestVerification.face_available && (
+                      <div className="w-full bg-[#333333] rounded-full h-2">
+                        <div className={`h-2 rounded-full transition-all ${latestVerification.face_score > 0.6 ? 'bg-green-500' : latestVerification.face_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                          style={{ width: `${latestVerification.face_score * 100}%` }} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="bg-black/30 rounded-xl p-4 border border-[#333333]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-gray-500 font-bold uppercase">Voice</span>
+                      {latestVerification.voice_available
+                        ? <span className="text-white font-bold">{(latestVerification.voice_score * 100).toFixed(1)}%</span>
+                        : <span className="text-gray-600 text-xs">N/A</span>
+                      }
+                    </div>
+                    {latestVerification.voice_available && (
+                      <div className="w-full bg-[#333333] rounded-full h-2">
+                        <div className={`h-2 rounded-full transition-all ${latestVerification.voice_score > 0.6 ? 'bg-green-500' : latestVerification.voice_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                          style={{ width: `${latestVerification.voice_score * 100}%` }} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* AI Error */}
+            {latestVerification.ai_error && !latestVerification.verdict && (
+              <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                <p className="text-red-400 text-sm">{latestVerification.ai_error}</p>
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
 
       {/* ═══ Voice Verification Modal ═══ */}
@@ -617,10 +741,12 @@ const ShipmentDetails = () => {
               {/* Status */}
               {(() => {
                 const statuses = {
-                  pending:   { color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/30', label: 'Waiting for Customer...', icon: <RefreshCw className="w-5 h-5 animate-spin" /> },
-                  completed: { color: 'text-green-400',  bg: 'bg-green-500/10 border-green-500/30',   label: 'Video Submitted!',       icon: <CheckCircle className="w-5 h-5" /> },
-                  expired:   { color: 'text-gray-400',   bg: 'bg-gray-500/10 border-gray-500/30',     label: 'Link Expired',           icon: <Clock className="w-5 h-5" /> },
-                  failed:    { color: 'text-red-400',    bg: 'bg-red-500/10 border-red-500/30',       label: 'Submission Failed',      icon: <X className="w-5 h-5" /> },
+                  pending:    { color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/30', label: 'Waiting for Customer...', icon: <RefreshCw className="w-5 h-5 animate-spin" /> },
+                  completed:  { color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/30',     label: 'Video Received — AI Analyzing...', icon: <RefreshCw className="w-5 h-5 animate-spin" /> },
+                  processing: { color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/30',     label: 'AI Verification in Progress...', icon: <RefreshCw className="w-5 h-5 animate-spin" /> },
+                  verified:   { color: vLinkModal.ai_match ? 'text-green-400' : 'text-red-400', bg: vLinkModal.ai_match ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30', label: vLinkModal.verdict || 'Verification Complete', icon: vLinkModal.ai_match ? <CheckCircle className="w-5 h-5" /> : <X className="w-5 h-5" /> },
+                  expired:    { color: 'text-gray-400',   bg: 'bg-gray-500/10 border-gray-500/30',     label: 'Link Expired',           icon: <Clock className="w-5 h-5" /> },
+                  failed:     { color: 'text-red-400',    bg: 'bg-red-500/10 border-red-500/30',       label: 'Submission Failed',      icon: <X className="w-5 h-5" /> },
                 };
                 const cfg = statuses[vLinkModal.status] || statuses.pending;
                 return (
@@ -631,11 +757,75 @@ const ShipmentDetails = () => {
                 );
               })()}
 
-              {/* Instructions */}
-              <div className="bg-black/50 rounded-xl p-4 border border-cyan-500/20">
-                <p className="text-xs text-cyan-400 font-bold uppercase tracking-wider mb-1">How It Works</p>
-                <p className="text-gray-300 text-sm">Send this one-time link to the customer. They can record a video with their camera or upload an existing video for identity verification.</p>
-              </div>
+              {/* AI Verification Results */}
+              {vLinkModal.status === 'verified' && vLinkModal.verdict && (
+                <div className="space-y-3">
+                  {/* Verdict Banner */}
+                  <div className={`p-4 rounded-xl border ${vLinkModal.ai_match ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className={`text-lg font-bold ${vLinkModal.ai_match ? 'text-green-400' : 'text-red-400'}`}>
+                        {vLinkModal.verdict}
+                      </span>
+                      <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                        vLinkModal.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                        vLinkModal.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
+                        'bg-red-500/20 text-red-400'
+                      }`}>
+                        {vLinkModal.confidence} confidence
+                      </span>
+                    </div>
+                    <p className="text-gray-400 text-sm">
+                      Combined Score: <span className="text-white font-bold">{(vLinkModal.combined_score * 100).toFixed(1)}%</span>
+                    </p>
+                  </div>
+
+                  {/* Individual Scores */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-black/50 rounded-xl p-3 border border-[#333333]">
+                      <p className="text-xs text-gray-500 mb-1">Face Match</p>
+                      {vLinkModal.face_available ? (
+                        <>
+                          <p className="text-white font-bold text-lg">{(vLinkModal.face_score * 100).toFixed(1)}%</p>
+                          <div className="w-full bg-[#333333] rounded-full h-1.5 mt-1">
+                            <div className={`h-1.5 rounded-full ${vLinkModal.face_score > 0.6 ? 'bg-green-500' : vLinkModal.face_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${vLinkModal.face_score * 100}%` }} />
+                          </div>
+                        </>
+                      ) : (
+                        <p className="text-gray-500 text-sm">No face detected</p>
+                      )}
+                    </div>
+                    <div className="bg-black/50 rounded-xl p-3 border border-[#333333]">
+                      <p className="text-xs text-gray-500 mb-1">Voice Match</p>
+                      {vLinkModal.voice_available ? (
+                        <>
+                          <p className="text-white font-bold text-lg">{(vLinkModal.voice_score * 100).toFixed(1)}%</p>
+                          <div className="w-full bg-[#333333] rounded-full h-1.5 mt-1">
+                            <div className={`h-1.5 rounded-full ${vLinkModal.voice_score > 0.6 ? 'bg-green-500' : vLinkModal.voice_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${vLinkModal.voice_score * 100}%` }} />
+                          </div>
+                        </>
+                      ) : (
+                        <p className="text-gray-500 text-sm">No audio detected</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* AI Error */}
+              {vLinkModal.status === 'verified' && vLinkModal.ai_error && !vLinkModal.verdict && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+                  <p className="text-red-400 text-sm font-bold mb-1">AI Verification Error</p>
+                  <p className="text-gray-400 text-xs">{vLinkModal.ai_error}</p>
+                </div>
+              )}
+
+              {/* Instructions (only show when pending) */}
+              {vLinkModal.status === 'pending' && (
+                <div className="bg-black/50 rounded-xl p-4 border border-cyan-500/20">
+                  <p className="text-xs text-cyan-400 font-bold uppercase tracking-wider mb-1">How It Works</p>
+                  <p className="text-gray-300 text-sm">Send this one-time link to the customer. They can record a video with their camera or upload an existing video for identity verification.</p>
+                </div>
+              )}
 
               {/* Link */}
               <div>
@@ -659,11 +849,21 @@ const ShipmentDetails = () => {
                 <p className="text-xs text-gray-500 text-center">Expires at {new Date(vLinkModal.expiresAt).toLocaleTimeString()}</p>
               )}
 
-              {/* Completed */}
-              {vLinkModal.status === 'completed' && (
-                <button onClick={closeVLinkModal} className="w-full py-3 bg-green-500 text-black font-bold rounded-xl hover:bg-green-400 transition-colors">
-                  Done — Video Received
+              {/* Action Buttons */}
+              {vLinkModal.status === 'verified' && (
+                <button onClick={closeVLinkModal} className={`w-full py-3 font-bold rounded-xl transition-colors ${
+                  vLinkModal.ai_match
+                    ? 'bg-green-500 text-black hover:bg-green-400'
+                    : 'bg-[#333333] text-white hover:bg-[#444444]'
+                }`}>
+                  {vLinkModal.ai_match ? 'Done — Identity Verified ✓' : 'Close'}
                 </button>
+              )}
+              {(vLinkModal.status === 'completed' || vLinkModal.status === 'processing') && (
+                <div className="text-center text-gray-500 text-sm">
+                  <RefreshCw className="w-4 h-4 animate-spin inline mr-2" />
+                  AI is analyzing face and voice... This may take a moment.
+                </div>
               )}
               {(vLinkModal.status === 'expired' || vLinkModal.status === 'failed') && (
                 <button onClick={() => { closeVLinkModal(); handleSendVerificationLink(); }}

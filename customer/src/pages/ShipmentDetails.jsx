@@ -3,9 +3,9 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Package, MapPin, User, Phone, Truck, Clock,
   CheckCircle, Box, FileText, Shield, Scale, Tag, Calendar,
-  Copy, CheckCheck, Video, Link2, AlertCircle
+  Copy, CheckCheck, Video, Link2, AlertCircle, RefreshCw, X, XCircle
 } from 'lucide-react';
-import { getShipmentById, initiateVideoCall, getCustomerVerificationLink } from '../services/api';
+import { getShipmentById, initiateVideoCall, getCustomerVerificationLink, getVerificationLinks } from '../services/api';
 
 const ShipmentDetails = () => {
   const { id } = useParams();
@@ -16,6 +16,7 @@ const ShipmentDetails = () => {
   const [copied, setCopied] = useState(false);
   const [callLoading, setCallLoading] = useState(false);
   const [verificationLink, setVerificationLink] = useState(null);
+  const [latestVerification, setLatestVerification] = useState(null);
 
   useEffect(() => {
     const fetchShipment = async () => {
@@ -44,6 +45,22 @@ const ShipmentDetails = () => {
     };
     checkVLink();
     const interval = setInterval(checkVLink, 8000);
+    return () => clearInterval(interval);
+  }, [shipment?.id]);
+
+  // Poll for latest AI verification result
+  useEffect(() => {
+    if (!shipment) return;
+    const fetchLinks = async () => {
+      try {
+        const res = await getVerificationLinks(shipment.id);
+        const links = res.data || [];
+        const withResult = links.find(l => l.verdict || l.status === 'verified' || l.status === 'processing' || l.status === 'completed');
+        if (withResult) setLatestVerification(withResult);
+      } catch { /* ignore */ }
+    };
+    fetchLinks();
+    const interval = setInterval(fetchLinks, 6000);
     return () => clearInterval(interval);
   }, [shipment?.id]);
 
@@ -204,6 +221,100 @@ const ShipmentDetails = () => {
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ═══ AI Verification Result Card ═══ */}
+        {latestVerification && (latestVerification.verdict || latestVerification.status === 'processing' || latestVerification.status === 'completed') && (
+          <div className={`rounded-2xl border p-6 mb-6 ${
+            latestVerification.verdict
+              ? (latestVerification.ai_match ? 'bg-green-500/5 border-green-500/30' : 'bg-red-500/5 border-red-500/30')
+              : 'bg-blue-500/5 border-blue-500/30'
+          }`}>
+            <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+              <Shield className="w-4 h-4 text-cyan-400" />
+              Identity Verification Result
+            </h2>
+
+            {/* Processing */}
+            {!latestVerification.verdict && (
+              <div className="flex items-center gap-3 text-blue-400">
+                <RefreshCw className="w-5 h-5 animate-spin" />
+                <span className="font-bold">AI is analyzing your face and voice...</span>
+              </div>
+            )}
+
+            {/* Results */}
+            {latestVerification.verdict && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {latestVerification.ai_match
+                      ? <CheckCircle className="w-8 h-8 text-green-400" />
+                      : <XCircle className="w-8 h-8 text-red-400" />
+                    }
+                    <div>
+                      <p className={`text-xl font-bold ${latestVerification.ai_match ? 'text-green-400' : 'text-red-400'}`}>
+                        {latestVerification.verdict}
+                      </p>
+                      <p className="text-gray-500 text-sm">Combined Score: {(latestVerification.combined_score * 100).toFixed(1)}%</p>
+                    </div>
+                  </div>
+                  <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${
+                    latestVerification.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                    latestVerification.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-red-500/20 text-red-400'
+                  }`}>
+                    {latestVerification.confidence}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-black/30 rounded-xl p-4 border border-[#333333]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-gray-500 font-bold uppercase">Face</span>
+                      {latestVerification.face_available
+                        ? <span className="text-white font-bold">{(latestVerification.face_score * 100).toFixed(1)}%</span>
+                        : <span className="text-gray-600 text-xs">N/A</span>
+                      }
+                    </div>
+                    {latestVerification.face_available && (
+                      <div className="w-full bg-[#333333] rounded-full h-2">
+                        <div className={`h-2 rounded-full transition-all ${latestVerification.face_score > 0.6 ? 'bg-green-500' : latestVerification.face_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                          style={{ width: `${latestVerification.face_score * 100}%` }} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="bg-black/30 rounded-xl p-4 border border-[#333333]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-gray-500 font-bold uppercase">Voice</span>
+                      {latestVerification.voice_available
+                        ? <span className="text-white font-bold">{(latestVerification.voice_score * 100).toFixed(1)}%</span>
+                        : <span className="text-gray-600 text-xs">N/A</span>
+                      }
+                    </div>
+                    {latestVerification.voice_available && (
+                      <div className="w-full bg-[#333333] rounded-full h-2">
+                        <div className={`h-2 rounded-full transition-all ${latestVerification.voice_score > 0.6 ? 'bg-green-500' : latestVerification.voice_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                          style={{ width: `${latestVerification.voice_score * 100}%` }} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <p className="text-gray-500 text-xs text-center">
+                  {latestVerification.ai_match
+                    ? '✓ Your identity has been verified. The courier can proceed with delivery.'
+                    : '✗ Identity could not be verified. Please contact your courier.'}
+                </p>
+              </div>
+            )}
+
+            {latestVerification.ai_error && !latestVerification.verdict && (
+              <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                <p className="text-red-400 text-sm">{latestVerification.ai_error}</p>
+              </div>
+            )}
           </div>
         )}
 

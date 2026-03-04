@@ -6,6 +6,7 @@ import os
 from app.database import get_db
 from app.models.shipment import Shipment
 from app.models.user import User, UserRole
+from app.models.voice_auth import VoiceVerification
 from app.schemas.shipment import ShipmentCreate, ShipmentUpdate, ShipmentResponse
 from app.services.auth import get_current_user
 
@@ -158,11 +159,20 @@ def delete_shipment(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
     
-    # Only the sender can delete, and only while still Pending
+    # Only the sender can delete, and only when marked as Delivered
     if current_user.role != UserRole.CUSTOMER or shipment.sender_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this shipment")
-    if shipment.status != "Pending":
-        raise HTTPException(status_code=400, detail="Can only delete shipments with Pending status")
+    if shipment.status != "Delivered":
+        raise HTTPException(status_code=400, detail="Can only delete shipments with Delivered status")
+    
+    # Delete related child records to avoid FK constraint errors
+    # Lazy imports: face-ai-engine modules are bootstrapped in main.py after this file loads
+    from app.models.face_ai_engine.verification_link import VerificationLink
+    from app.models.face_ai_engine.video_call import VideoCallSession
+    
+    db.query(VerificationLink).filter(VerificationLink.shipment_id == shipment_id).delete()
+    db.query(VideoCallSession).filter(VideoCallSession.shipment_id == shipment_id).delete()
+    db.query(VoiceVerification).filter(VoiceVerification.shipment_id == shipment_id).delete()
     
     db.delete(shipment)
     db.commit()
@@ -183,12 +193,13 @@ async def upload_shipment_media(
     if media_type not in ("image", "video"):
         raise HTTPException(status_code=400, detail="media_type must be 'image' or 'video'")
 
-    # Validate file type
+    # Validate file type (strip codec params like "video/webm;codecs=vp9,opus" → "video/webm")
     allowed_image = {"image/jpeg", "image/png", "image/gif", "image/svg+xml", "image/webp"}
     allowed_video = {"video/mp4", "video/webm", "video/quicktime", "video/x-matroska", "video/avi"}
     allowed = allowed_image if media_type == "image" else allowed_video
 
-    if file.content_type not in allowed:
+    base_content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if base_content_type not in allowed:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
 
     # Size limits: images 5MB, videos 100MB

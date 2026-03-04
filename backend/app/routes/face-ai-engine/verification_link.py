@@ -3,14 +3,14 @@ Verification Link Routes – couriers generate one-time links, customers
 open them to record/upload a video without authentication.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import os
 import uuid
 import logging
 
-from app.database import get_db
+from app.database import get_db, SessionLocal
 from app.services.auth import get_current_user
 from app.models.user import User
 from app.models.shipment import Shipment
@@ -19,6 +19,7 @@ from app.schemas.face_ai_engine.verification_link import (
     VerificationLinkCreate,
     VerificationLinkResponse,
     VerificationLinkPublic,
+    VerificationResultResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,15 @@ def generate_link(
         completed_at=vlink.completed_at,
         expires_at=vlink.expires_at,
         link=customer_link,
+        ai_match=vlink.ai_match,
+        face_score=vlink.face_score,
+        voice_score=vlink.voice_score,
+        combined_score=vlink.combined_score,
+        confidence=vlink.confidence,
+        verdict=vlink.verdict,
+        face_available=vlink.face_available,
+        voice_available=vlink.voice_available,
+        ai_error=vlink.ai_error,
     )
 
 
@@ -123,6 +133,15 @@ def get_links_for_shipment(
             completed_at=vl.completed_at,
             expires_at=vl.expires_at,
             link=f"http://localhost:3001/verification/{vl.token}",
+            ai_match=vl.ai_match,
+            face_score=vl.face_score,
+            voice_score=vl.voice_score,
+            combined_score=vl.combined_score,
+            confidence=vl.confidence,
+            verdict=vl.verdict,
+            face_available=vl.face_available,
+            voice_available=vl.voice_available,
+            ai_error=vl.ai_error,
         ))
     return results
 
@@ -195,6 +214,16 @@ def get_link_status(
         "status": vlink.status,
         "video_path": vlink.video_path,
         "completed_at": vlink.completed_at,
+        # AI verification results
+        "ai_match": vlink.ai_match,
+        "face_score": vlink.face_score,
+        "voice_score": vlink.voice_score,
+        "combined_score": vlink.combined_score,
+        "confidence": vlink.confidence,
+        "verdict": vlink.verdict,
+        "face_available": vlink.face_available,
+        "voice_available": vlink.voice_available,
+        "ai_error": vlink.ai_error,
     }
 
 
@@ -242,12 +271,14 @@ def get_link_public(
 @router.post("/public/{token}/submit")
 async def submit_verification_video(
     token: str,
+    background_tasks: BackgroundTasks,
     video: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
     """
     Customer submits their recorded/uploaded video.
     No auth required – the one-time token IS the auth.
+    After saving, triggers AI face+voice comparison in the background.
     """
     vlink = db.query(VerificationLink).filter(VerificationLink.token == token).first()
     if not vlink:
@@ -266,9 +297,10 @@ async def submit_verification_video(
             detail=f"This link has already been {vlink.status}. Please ask the courier for a new link."
         )
 
-    # Validate file type
+    # Validate file type (strip codec params like "video/webm;codecs=vp8,opus" → "video/webm")
     allowed = {"video/webm", "video/mp4", "video/quicktime", "video/x-matroska", "video/avi"}
-    if video.content_type not in allowed:
+    base_content_type = (video.content_type or "").split(";")[0].strip().lower()
+    if base_content_type not in allowed:
         raise HTTPException(status_code=400, detail=f"Unsupported video type: {video.content_type}. Accepted: mp4, webm, mov, mkv")
 
     # Save file
@@ -280,7 +312,7 @@ async def submit_verification_video(
     with open(filepath, "wb") as f:
         f.write(contents)
 
-    # Update link
+    # Update link status
     vlink.status = "completed"
     vlink.video_path = filepath
     vlink.completed_at = datetime.utcnow()
@@ -288,8 +320,60 @@ async def submit_verification_video(
 
     logger.info(f"Verification video submitted for token {token}: {filepath}")
 
+    # ── Trigger AI comparison in the background ────────────────────
+    shipment = db.query(Shipment).filter(Shipment.id == vlink.shipment_id).first()
+    if shipment and shipment.video_url:
+        from app.services.face_ai_engine.verification_service import run_ai_verification
+
+        background_tasks.add_task(
+            run_ai_verification,
+            verification_link_id=vlink.id,
+            reference_video_url=shipment.video_url,
+            live_video_path=filepath,
+            db_session_factory=SessionLocal,
+        )
+        logger.info(f"AI verification queued for link {vlink.id}")
+    else:
+        logger.warning(
+            f"No reference video on shipment {vlink.shipment_id} — "
+            f"AI comparison skipped"
+        )
+
     return {
-        "detail": "Video submitted successfully",
+        "detail": "Video submitted successfully. AI verification is processing.",
         "token": token,
         "status": "completed",
     }
+
+
+# ── Verification Result endpoint (public – token-based) ───────────
+
+
+@router.get("/result/{token}", response_model=VerificationResultResponse)
+def get_verification_result(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Poll this endpoint to get AI verification results.
+    No auth required – customer can check with their token.
+    Courier uses the authenticated /status/{token} endpoint.
+    """
+    vlink = db.query(VerificationLink).filter(VerificationLink.token == token).first()
+    if not vlink:
+        raise HTTPException(status_code=404, detail="Verification link not found")
+
+    return VerificationResultResponse(
+        token=vlink.token,
+        status=vlink.status,
+        ai_match=vlink.ai_match,
+        face_score=vlink.face_score,
+        voice_score=vlink.voice_score,
+        combined_score=vlink.combined_score,
+        confidence=vlink.confidence,
+        verdict=vlink.verdict,
+        face_available=vlink.face_available,
+        voice_available=vlink.voice_available,
+        ai_error=vlink.ai_error,
+        completed_at=vlink.completed_at,
+    )

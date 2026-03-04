@@ -50,5 +50,10 @@ export const getVideoCallWsUrl = (roomId) => {
 export const generateVerificationLink = (data) => api.post('/verification-link/generate', data);
 export const getVerificationLinks = (shipmentId) => api.get(`/verification-link/shipment/${shipmentId}`);
 export const getVerificationLinkStatus = (token) => api.get(`/verification-link/status/${token}`);
+export const getVerificationResult = (token) => api.get(`/verification-link/result/${token}`);
+
+// Live Face Verification (during video call)
+export const verifyFaceDuringCall = (roomId, snapshotBase64) =>
+  api.post('/video-call/verify-face', { room_id: roomId, snapshot: snapshotBase64 });
 
 export default api;

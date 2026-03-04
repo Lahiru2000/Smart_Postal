@@ -4,7 +4,7 @@ import {
   Video, VideoOff, Upload, CheckCircle, XCircle, Clock,
   Camera, StopCircle, RotateCcw, Send, Package, User, AlertTriangle
 } from 'lucide-react';
-import { getVerificationLinkPublic, submitVerificationVideo } from '../services/api';
+import { getVerificationLinkPublic, submitVerificationVideo, getVerificationResult } from '../services/api';
 
 const VerificationCapture = () => {
   const { token } = useParams();
@@ -29,6 +29,10 @@ const VerificationCapture = () => {
 
   // Submission
   const [submitError, setSubmitError] = useState('');
+
+  // AI Verification result
+  const [aiResult, setAiResult] = useState(null);
+  const resultPollRef = useRef(null);
 
   // Refs
   const videoRef = useRef(null);
@@ -63,6 +67,7 @@ const VerificationCapture = () => {
     return () => {
       stopCamera();
       if (timerRef.current) clearInterval(timerRef.current);
+      if (resultPollRef.current) clearInterval(resultPollRef.current);
     };
   }, [token]);
 
@@ -177,6 +182,23 @@ const VerificationCapture = () => {
 
       await submitVerificationVideo(token, videoFile);
       setMode('done');
+
+      // Start polling for AI verification result
+      resultPollRef.current = setInterval(async () => {
+        try {
+          const res = await getVerificationResult(token);
+          const data = res.data;
+          if (data.verdict || data.status === 'verified') {
+            setAiResult(data);
+            clearInterval(resultPollRef.current);
+            resultPollRef.current = null;
+          } else if (data.ai_error) {
+            setAiResult(data);
+            clearInterval(resultPollRef.current);
+            resultPollRef.current = null;
+          }
+        } catch { /* ignore */ }
+      }, 4000);
     } catch (err) {
       setSubmitError(err.response?.data?.detail || 'Failed to submit video. Please try again.');
       setMode('preview');
@@ -227,12 +249,99 @@ const VerificationCapture = () => {
   // ── Done ───────────────────────────────────────────────
   if (mode === 'done') {
     return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-4 px-4">
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-6 px-4">
+        {/* Submission confirmed */}
         <div className="w-24 h-24 bg-green-500/10 rounded-full flex items-center justify-center">
           <CheckCircle className="w-12 h-12 text-green-400" />
         </div>
         <h1 className="text-white text-2xl font-bold">Video Submitted!</h1>
-        <p className="text-gray-400 text-center max-w-sm">Your verification video has been sent to the courier. You can close this page now.</p>
+
+        {/* AI Result Section */}
+        {!aiResult ? (
+          <div className="w-full max-w-sm space-y-3">
+            <div className="flex items-center justify-center gap-3 text-blue-400">
+              <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <span className="font-medium text-sm">AI is verifying your identity...</span>
+            </div>
+            <p className="text-gray-500 text-center text-xs">Comparing face and voice with your reference video. This may take a moment.</p>
+          </div>
+        ) : aiResult.verdict ? (
+          <div className="w-full max-w-sm space-y-4">
+            {/* Verdict Card */}
+            <div className={`rounded-2xl border p-5 ${
+              aiResult.ai_match ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'
+            }`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  {aiResult.ai_match
+                    ? <CheckCircle className="w-6 h-6 text-green-400" />
+                    : <XCircle className="w-6 h-6 text-red-400" />
+                  }
+                  <span className={`text-lg font-bold ${aiResult.ai_match ? 'text-green-400' : 'text-red-400'}`}>
+                    {aiResult.verdict}
+                  </span>
+                </div>
+                <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                  aiResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                  aiResult.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
+                  'bg-red-500/20 text-red-400'
+                }`}>
+                  {aiResult.confidence}
+                </span>
+              </div>
+
+              <p className="text-gray-400 text-sm mb-3">
+                Overall Score: <span className="text-white font-bold">{(aiResult.combined_score * 100).toFixed(1)}%</span>
+              </p>
+
+              {/* Score Breakdown */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-black/30 rounded-xl p-3">
+                  <p className="text-xs text-gray-500 mb-1">Face</p>
+                  {aiResult.face_available ? (
+                    <>
+                      <p className="text-white font-bold">{(aiResult.face_score * 100).toFixed(1)}%</p>
+                      <div className="w-full bg-[#333333] rounded-full h-1.5 mt-1">
+                        <div className={`h-1.5 rounded-full ${aiResult.face_score > 0.6 ? 'bg-green-500' : aiResult.face_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                          style={{ width: `${aiResult.face_score * 100}%` }} />
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-gray-600 text-xs">Not detected</p>
+                  )}
+                </div>
+                <div className="bg-black/30 rounded-xl p-3">
+                  <p className="text-xs text-gray-500 mb-1">Voice</p>
+                  {aiResult.voice_available ? (
+                    <>
+                      <p className="text-white font-bold">{(aiResult.voice_score * 100).toFixed(1)}%</p>
+                      <div className="w-full bg-[#333333] rounded-full h-1.5 mt-1">
+                        <div className={`h-1.5 rounded-full ${aiResult.voice_score > 0.6 ? 'bg-green-500' : aiResult.voice_score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                          style={{ width: `${aiResult.voice_score * 100}%` }} />
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-gray-600 text-xs">Not detected</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <p className="text-gray-500 text-center text-xs">
+              {aiResult.ai_match
+                ? 'Your identity has been verified. The courier has been notified.'
+                : 'Verification did not match. Please contact your courier for assistance.'
+              }
+            </p>
+          </div>
+        ) : aiResult.ai_error ? (
+          <div className="w-full max-w-sm bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+            <p className="text-red-400 text-sm">Verification encountered an error. The courier has been notified.</p>
+          </div>
+        ) : (
+          <p className="text-gray-400 text-center max-w-sm">Your verification video has been sent to the courier.</p>
+        )}
+
         {linkInfo?.shipment_tracking && (
           <div className="flex items-center gap-2 text-gray-500 text-sm mt-2">
             <Package className="w-4 h-4" />
