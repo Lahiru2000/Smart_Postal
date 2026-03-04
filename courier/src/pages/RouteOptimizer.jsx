@@ -953,7 +953,7 @@ const RouteOptimizer = () => {
   const stormPoints = weatherData.filter((w) => w.severity >= 4);
 
   // ═══════════════════════════════════════════
-  //  RENDERi
+  //  RENDER
   // ═══════════════════════════════════════════
 
   return (
