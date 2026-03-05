@@ -5,8 +5,14 @@ Video Call Routes – REST endpoints + WebSocket signaling for WebRTC video call
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.orm import Session
 from datetime import datetime
+from pydantic import BaseModel
+from typing import Optional
 import json
 import logging
+import base64
+import numpy as np
+import os
+import tempfile
 
 from app.database import get_db
 from app.services.auth import get_current_user
@@ -207,6 +213,159 @@ def end_call(
     session.ended_at = datetime.utcnow()
     db.commit()
     return {"detail": "Call ended", "room_id": room_id}
+
+
+# ── Live Face Verification (during video call) ───────────
+
+
+class VerifyFaceRequest(BaseModel):
+    room_id: str
+    snapshot: str  # base64-encoded JPEG/PNG image from remote video frame
+
+
+@router.post("/verify-face")
+def verify_face_during_call(
+    payload: VerifyFaceRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Courier captures a frame from the remote video stream during a live call
+    and sends it here. We compare it against the shipment's reference
+    image/video using DeepFace ArcFace and return the result.
+    """
+    import cv2
+    from app.models.shipment import Shipment
+
+    # 1. Validate the call session
+    session = db.query(VideoCallSession).filter(
+        VideoCallSession.room_id == payload.room_id
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Call session not found")
+    if current_user.id not in (session.caller_id, session.callee_id):
+        raise HTTPException(status_code=403, detail="Not a participant")
+    if not session.shipment_id:
+        raise HTTPException(status_code=400, detail="No shipment linked to this call")
+
+    # 2. Get the shipment and its reference media
+    shipment = db.query(Shipment).filter(Shipment.id == session.shipment_id).first()
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+
+    if not shipment.image_url and not shipment.video_url:
+        raise HTTPException(
+            status_code=400,
+            detail="No reference media on this shipment. Customer must upload an image or video first."
+        )
+
+    # 3. Decode the base64 snapshot into an OpenCV frame
+    try:
+        # Handle data URL format: "data:image/jpeg;base64,/9j/4AAQ..."
+        snapshot_data = payload.snapshot
+        if "," in snapshot_data:
+            snapshot_data = snapshot_data.split(",", 1)[1]
+        img_bytes = base64.b64decode(snapshot_data)
+        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+        live_frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if live_frame is None:
+            raise ValueError("Failed to decode image")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid snapshot image: {e}")
+
+    # 4. Get face embedding from the live snapshot
+    from app.services.face_ai_engine.ai_model.face_verifier import get_face_embedding
+
+    live_embedding = get_face_embedding(live_frame)
+    if live_embedding is None:
+        return {
+            "success": False,
+            "error": "No face detected in the video call snapshot. Please ensure the person's face is clearly visible and try again.",
+            "face_score": None,
+            "verdict": None,
+            "confidence": None,
+        }
+
+    # 5. Get reference embedding from the shipment's media
+    ref_embedding = None
+    media_source = None
+
+    # Resolve the file path from the URL
+    base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "uploads")
+
+    if shipment.video_url:
+        # Reference is a video — use robust multi-frame embedding
+        from app.services.face_ai_engine.ai_model.face_verifier import get_robust_embedding
+        ref_path = os.path.join(base_dir, shipment.video_url.lstrip("/uploads/"))
+        if os.path.exists(ref_path):
+            ref_embedding, frame_count = get_robust_embedding(ref_path)
+            media_source = "video"
+            logger.info(f"Reference embedding from video: {frame_count} frames")
+        else:
+            logger.warning(f"Reference video not found at: {ref_path}")
+
+    if ref_embedding is None and shipment.image_url:
+        # Reference is an image — extract single frame embedding
+        ref_path = os.path.join(base_dir, shipment.image_url.lstrip("/uploads/"))
+        if os.path.exists(ref_path):
+            ref_frame = cv2.imread(ref_path)
+            if ref_frame is not None:
+                ref_embedding = get_face_embedding(ref_frame)
+                media_source = "image"
+        else:
+            logger.warning(f"Reference image not found at: {ref_path}")
+
+    if ref_embedding is None:
+        return {
+            "success": False,
+            "error": "Could not extract face from reference media. The reference image/video may not contain a clear face.",
+            "face_score": None,
+            "verdict": None,
+            "confidence": None,
+        }
+
+    # 6. Compare embeddings (cosine similarity → sigmoid score)
+    cos_sim = float(np.dot(live_embedding, ref_embedding) / (
+        np.linalg.norm(live_embedding) * np.linalg.norm(ref_embedding)
+    ))
+
+    # Sigmoid mapping (same as face_verifier.py)
+    SIGMOID_STEEPNESS = 15
+    SIGMOID_MIDPOINT = 0.32
+    score = 1.0 / (1.0 + np.exp(-SIGMOID_STEEPNESS * (cos_sim - SIGMOID_MIDPOINT)))
+    score = float(np.clip(score, 0.0, 1.0))
+    score = round(score, 4)
+
+    # Determine verdict
+    MATCH_THRESHOLD = 0.62
+    is_match = score >= MATCH_THRESHOLD
+
+    if score >= 0.85:
+        confidence = "HIGH"
+    elif score >= 0.65:
+        confidence = "MEDIUM"
+    elif score >= MATCH_THRESHOLD:
+        confidence = "LOW"
+    else:
+        confidence = "HIGH" if score < 0.25 else "MEDIUM"
+
+    verdict = "SAME PERSON" if is_match else "DIFFERENT PERSON"
+
+    logger.info(
+        f"Live face verification: cos_sim={cos_sim:.4f}, score={score:.4f}, "
+        f"verdict={verdict}, confidence={confidence}, ref={media_source}"
+    )
+
+    return {
+        "success": True,
+        "face_score": round(score * 100, 1),
+        "cos_similarity": round(cos_sim, 4),
+        "verdict": verdict,
+        "confidence": confidence,
+        "is_match": is_match,
+        "reference_type": media_source,
+        "error": None,
+    }
 
 
 # ── WebSocket Signaling ──────────────────────────────────
