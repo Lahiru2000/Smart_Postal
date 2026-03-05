@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   MapPin,
@@ -24,8 +24,40 @@ import {
   Droplets,
   RotateCcw,
   Clock,
+  // ── New feature imports ──
+  Play,
+  CheckCircle,
+  XCircle,
+  Radio,
+  Repeat,
+  UserCheck,
+  Users,
+  ArrowLeftRight,
+  SkipForward,
+  Car,
+  Construction,
+  LogIn,
+  PhoneForwarded,
+  Siren,
+  Timer,
+  TrendingUp,
+  ShieldAlert,
+  ListChecks,
+  Milestone,
 } from "lucide-react";
-import { getShipments } from "../services/api";
+import {
+  getShipments,
+  updatePostmanLocation,
+  getNearbyPostmen,
+  startDeliverySession,
+  getMyActiveSession,
+  completeStop,
+  endDeliverySession,
+  reportDisruption as apiReportDisruption,
+  getSessionDisruptions,
+  createRedirection as apiCreateRedirection,
+  getSessionRedirections,
+} from "../services/api";
 
 // ─── API ────────────────────────────────────────────────────────────────────
 const GOOGLE_MAPS_API_KEY =
@@ -327,14 +359,83 @@ const RouteOptimizer = () => {
   const [shipments, setShipments] = useState([]);
   const [loadingShipments, setLoadingShipments] = useState(false);
 
+  // ── Feature: Real-time Traffic Integration ──
+  const [trafficRefreshing, setTrafficRefreshing] = useState(false);
+  const [trafficLegs, setTrafficLegs] = useState([]);
+  const [lastTrafficRefresh, setLastTrafficRefresh] = useState(null);
+  const [showTrafficPanel, setShowTrafficPanel] = useState(false);
+
+  // ── Feature: Dynamic Re-routing ──
+  const [deliveryMode, setDeliveryMode] = useState(false);
+  const [sessionId, setSessionId] = useState(null); // ← persisted backend ID
+  const [currentStopIdx, setCurrentStopIdx] = useState(0);
+  const [completedStops, setCompletedStops] = useState(new Set());
+  const [disruptions, setDisruptions] = useState([]);
+  const [showDisruptionModal, setShowDisruptionModal] = useState(false);
+  const [disruptionTarget, setDisruptionTarget] = useState(null);
+  const [rerouteLoading, setRerouteLoading] = useState(false);
+  const [rerouteResult, setRerouteResult] = useState(null);
+
+  // ── Feature: Inter-Postman Redirection ──
+  const [redirections, setRedirections] = useState([]);
+  const [showRedirectPanel, setShowRedirectPanel] = useState(null);
+  const [nearbyPostmen, setNearbyPostmen] = useState([]);
+  const [loadingNearby, setLoadingNearby] = useState(false);
+  const [redirectionLog, setRedirectionLog] = useState([]);
+  const [showRedirectionLog, setShowRedirectionLog] = useState(false);
+
   // ── Refs ──
   const mapRef = useRef(null);
+  const gpsWatchRef = useRef(null); // Geolocation watchPosition ID
+  const trafficIntervalRef = useRef(null);
   const searchInputRef = useRef(null);
   const markersRef = useRef([]);
 
   useEffect(() => {
     markersRef.current = markers;
   }, [markers]);
+
+  // ─── GPS BROADCASTING ───────────────────────────────────────────────────
+  // Broadcasts postman position to backend every time the browser fires a
+  // location update (typically every 5-15 s depending on device).
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    gpsWatchRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude, longitude, accuracy, heading, speed } = pos.coords;
+        updatePostmanLocation({
+          lat: latitude,
+          lng: longitude,
+          accuracy_m: accuracy,
+          heading: heading ?? undefined,
+          speed_kmh: speed != null ? speed * 3.6 : undefined,
+          is_available: !deliveryMode,
+        }).catch(() => {
+          /* silently swallow — non-critical */
+        });
+      },
+      (err) => console.warn("GPS error:", err.message),
+      { enableHighAccuracy: true, maximumAge: 10_000 },
+    );
+    return () => {
+      if (gpsWatchRef.current != null)
+        navigator.geolocation.clearWatch(gpsWatchRef.current);
+    };
+  }, [deliveryMode]);
+
+  // ─── AUTO TRAFFIC REFRESH DURING DELIVERY ──────────────────────────────
+  // Re-fetches traffic data every 5 minutes while a delivery is active.
+  useEffect(() => {
+    if (deliveryMode && routeResults) {
+      trafficIntervalRef.current = setInterval(
+        refreshTrafficData,
+        5 * 60 * 1000,
+      );
+    } else {
+      clearInterval(trafficIntervalRef.current);
+    }
+    return () => clearInterval(trafficIntervalRef.current);
+  }, [deliveryMode, routeResults]);
 
   // ─── GOOGLE MAPS LOADING ────────────────────────────────────────────────
   useEffect(() => {
@@ -874,6 +975,383 @@ const RouteOptimizer = () => {
     );
   };
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // ║  FEATURE 1 — REAL-TIME TRAFFIC REFRESH
+  // ══════════════════════════════════════════════════════════════════════════
+  const refreshTrafficData = async () => {
+    if (!routeResults || !window.google) return;
+    setTrafficRefreshing(true);
+    try {
+      const { optimizedRoute } = routeResults;
+      const origin = optimizedRoute[0];
+      const destination = optimizedRoute[optimizedRoute.length - 1];
+      const waypoints = optimizedRoute.slice(1, -1);
+
+      const directionsService = new window.google.maps.DirectionsService();
+      const request = {
+        origin: new window.google.maps.LatLng(origin.lat, origin.lng),
+        destination: new window.google.maps.LatLng(
+          destination.lat,
+          destination.lng,
+        ),
+        waypoints: waypoints.map((w) => ({
+          location: new window.google.maps.LatLng(w.lat, w.lng),
+          stopover: true,
+        })),
+        optimizeWaypoints: false, // keep current order
+        travelMode: "DRIVING",
+        drivingOptions: {
+          departureTime: new Date(),
+          trafficModel: "bestguess",
+        },
+      };
+
+      directionsService.route(request, (result, status) => {
+        if (status !== "OK") {
+          console.error("Traffic refresh failed:", status);
+          setTrafficRefreshing(false);
+          return;
+        }
+
+        const legs = result.routes[0].legs.map((leg) => {
+          const baseDuration = leg.duration.value; // seconds without traffic
+          const trafficDuration =
+            leg.duration_in_traffic?.value || baseDuration;
+          const delaySeconds = Math.max(0, trafficDuration - baseDuration);
+          const delayMin = Math.round(delaySeconds / 60);
+          const ratio = trafficDuration / (baseDuration || 1);
+          const congestionLevel =
+            ratio > 1.5 ? "heavy" : ratio > 1.2 ? "moderate" : "light";
+
+          return {
+            start: leg.start_address,
+            end: leg.end_address,
+            duration: baseDuration,
+            durationWithTraffic: trafficDuration,
+            delayMin,
+            congestionLevel,
+            distance: leg.distance.value,
+          };
+        });
+
+        // Update renderer with fresh traffic-aware directions
+        if (directionsRenderer) directionsRenderer.setDirections(result);
+
+        const totalTrafficDuration = legs.reduce(
+          (sum, l) => sum + l.durationWithTraffic,
+          0,
+        );
+        setTrafficLegs(legs);
+        setLastTrafficRefresh(new Date());
+        setShowTrafficPanel(true);
+        // Update total duration live
+        setRouteResults((prev) => ({
+          ...prev,
+          totalDuration: totalTrafficDuration,
+          trafficLegs: legs,
+        }));
+        setTrafficRefreshing(false);
+      });
+    } catch (err) {
+      console.error("Traffic refresh error:", err);
+      setTrafficRefreshing(false);
+    }
+  };
+
+  const getCongestionColor = (level) => {
+    if (level === "heavy")
+      return {
+        text: "text-red-400",
+        bg: "bg-red-500/10",
+        border: "border-red-500/30",
+      };
+    if (level === "moderate")
+      return {
+        text: "text-orange-400",
+        bg: "bg-orange-500/10",
+        border: "border-orange-500/30",
+      };
+    return {
+      text: "text-green-400",
+      bg: "bg-green-500/10",
+      border: "border-green-500/30",
+    };
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ║  FEATURE 2 — DYNAMIC RE-ROUTING
+  // ══════════════════════════════════════════════════════════════════════════
+  const startDelivery = async () => {
+    if (!routeResults) return;
+    try {
+      const { data } = await startDeliverySession({
+        route_data: routeResults.optimizedRoute,
+        google_maps_url: routeResults.googleMapsUrl,
+        total_distance_m: routeResults.totalDistance,
+        total_duration_s: routeResults.totalDuration,
+      });
+      setSessionId(data.id);
+      setDeliveryMode(true);
+      setCurrentStopIdx(data.current_stop_idx);
+      setCompletedStops(new Set(data.completed_stops));
+      setDisruptions([]);
+      setRerouteResult(null);
+      setRedirectionLog([]);
+      // Fetch postmen near the centroid of the route
+      fetchNearbyPostmen(routeResults.optimizedRoute);
+    } catch (err) {
+      console.error("Failed to start session:", err);
+      setError("Failed to start delivery session. Please try again.");
+    }
+  };
+
+  const markStopDelivered = async (idx) => {
+    if (!sessionId) return;
+    try {
+      const { data } = await completeStop(sessionId, idx);
+      setCompletedStops(new Set(data.completed_stops));
+      setCurrentStopIdx(data.current_stop_idx);
+      // Update marker icon to green on map
+      const m = markers[idx];
+      if (m?.marker) {
+        m.marker.setIcon({
+          path: window.google.maps.SymbolPath.CIRCLE,
+          scale: 14,
+          fillColor: "#22C55E",
+          fillOpacity: 1,
+          strokeColor: "#000",
+          strokeWeight: 2,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to complete stop:", err);
+      setError("Failed to mark stop as delivered. Please retry.");
+    }
+  };
+
+  const reportDisruption = async (stopIndex, type) => {
+    if (!sessionId) return;
+    setShowDisruptionModal(false);
+    setDisruptionTarget(null);
+    try {
+      const { data } = await apiReportDisruption({
+        session_id: sessionId,
+        stop_index: stopIndex,
+        disruption_type: type,
+      });
+      setDisruptions((prev) => [
+        ...prev,
+        {
+          id: data.id,
+          stopIndex: data.stop_index,
+          type: data.disruption_type,
+          description: data.description,
+          timestamp: new Date(data.reported_at),
+          status: data.status,
+        },
+      ]);
+      rerouteAroundDisruption(stopIndex, { type });
+    } catch (err) {
+      console.error("Failed to report disruption:", err);
+      setError("Disruption could not be saved. Re-routing locally.");
+      rerouteAroundDisruption(stopIndex, { type }); // still re-route locally
+    }
+  };
+
+  const rerouteAroundDisruption = async (skippedStopIdx, disruption) => {
+    if (!routeResults || !window.google) return;
+    setRerouteLoading(true);
+
+    const { optimizedRoute } = routeResults;
+
+    // Build remaining route excluding disrupted stop and already-completed stops
+    const remaining = optimizedRoute.filter(
+      (_, i) =>
+        i !== skippedStopIdx && !completedStops.has(i) && i >= currentStopIdx,
+    );
+
+    if (remaining.length < 2) {
+      setRerouteLoading(false);
+      return;
+    }
+
+    const origin = remaining[0];
+    const destination = remaining[remaining.length - 1];
+    const waypoints = remaining.slice(1, -1);
+
+    const directionsService = new window.google.maps.DirectionsService();
+    const request = {
+      origin: new window.google.maps.LatLng(origin.lat, origin.lng),
+      destination: new window.google.maps.LatLng(
+        destination.lat,
+        destination.lng,
+      ),
+      waypoints: waypoints.map((w) => ({
+        location: new window.google.maps.LatLng(w.lat, w.lng),
+        stopover: true,
+      })),
+      optimizeWaypoints: false,
+      travelMode: "DRIVING",
+      drivingOptions: { departureTime: new Date(), trafficModel: "bestguess" },
+      avoidHighways: disruption?.type === "flooding",
+    };
+
+    directionsService.route(request, (result, status) => {
+      if (status === "OK") {
+        directionsRenderer.setDirections(result);
+        let rerouteDuration = 0,
+          rerouteDistance = 0;
+        result.routes[0].legs.forEach((leg) => {
+          rerouteDuration +=
+            leg.duration_in_traffic?.value || leg.duration.value;
+          rerouteDistance += leg.distance.value;
+        });
+        setRerouteResult({
+          skippedStop: optimizedRoute[skippedStopIdx],
+          newRoute: remaining,
+          rerouteDuration,
+          rerouteDistance,
+          timestamp: new Date(),
+        });
+      } else {
+        console.error("Re-route failed:", status);
+      }
+      setRerouteLoading(false);
+    });
+  };
+
+  const endDelivery = async () => {
+    if (sessionId) {
+      try {
+        await endDeliverySession(sessionId, "abandoned");
+      } catch (err) {
+        console.error("Failed to end session:", err);
+      }
+    }
+    setDeliveryMode(false);
+    setSessionId(null);
+    setCurrentStopIdx(0);
+    setCompletedStops(new Set());
+    setDisruptions([]);
+    setRerouteResult(null);
+    setShowRedirectPanel(null);
+    setRedirectionLog([]);
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ║  FEATURE 3 — INTER-POSTMAN REDIRECTION
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── REAL: Fetch nearby postmen from API ───────────────────────────────
+  const fetchNearbyPostmen = async (route) => {
+    if (!route?.length) return;
+    setLoadingNearby(true);
+    const centroid = route.reduce(
+      (acc, loc) => ({
+        lat: acc.lat + loc.lat / route.length,
+        lng: acc.lng + loc.lng / route.length,
+      }),
+      { lat: 0, lng: 0 },
+    );
+    try {
+      const { data } = await getNearbyPostmen(centroid.lat, centroid.lng, 15);
+      setNearbyPostmen(data);
+    } catch (err) {
+      console.error("Failed to fetch nearby postmen:", err);
+      setNearbyPostmen([]);
+    } finally {
+      setLoadingNearby(false);
+    }
+  };
+
+  const flagForRedirection = (stopIndex, reason) => {
+    setShowRedirectPanel(stopIndex);
+    setRedirections((prev) => {
+      const exists = prev.find((r) => r.stopIndex === stopIndex);
+      if (exists)
+        return prev.map((r) =>
+          r.stopIndex === stopIndex ? { ...r, reason } : r,
+        );
+      return [
+        ...prev,
+        {
+          stopIndex,
+          reason,
+          status: "pending",
+          postman: null,
+          timestamp: null,
+        },
+      ];
+    });
+  };
+
+  const assignRedirection = async (stopIndex, postman) => {
+    if (!sessionId) return;
+    const stop = routeResults?.optimizedRoute[stopIndex];
+    const redirectionReason =
+      redirections.find((r) => r.stopIndex === stopIndex)?.reason ||
+      "Address issue";
+    try {
+      const { data } = await apiCreateRedirection({
+        session_id: sessionId,
+        stop_index: stopIndex,
+        stop_name: stop?.name,
+        stop_lat: stop?.lat,
+        stop_lng: stop?.lng,
+        to_postman_id: postman.postman_id,
+        reason: redirectionReason,
+      });
+
+      const event = {
+        id: data.id,
+        stopIndex: data.stop_index,
+        stopName: data.stop_name,
+        reason: data.reason,
+        postman: { name: data.to_postman_name, zone: data.to_postman_zone },
+        timestamp: new Date(data.created_at),
+        status: data.status,
+      };
+
+      setRedirections((prev) =>
+        prev.map((r) =>
+          r.stopIndex === stopIndex
+            ? { ...r, postman, status: "transferred", timestamp: new Date() }
+            : r,
+        ),
+      );
+      setRedirectionLog((prev) => [event, ...prev]);
+      setShowRedirectPanel(null);
+
+      // Update marker to purple on map
+      const m = markers[stopIndex];
+      if (m?.marker) {
+        m.marker.setIcon({
+          path: window.google.maps.SymbolPath.CIRCLE,
+          scale: 14,
+          fillColor: "#A855F7",
+          fillOpacity: 1,
+          strokeColor: "#000",
+          strokeWeight: 2,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to create redirection:", err);
+      setError("Handoff could not be saved. Please try again.");
+    }
+  };
+
+  const getStopDeliveryStatus = (idx) => {
+    if (completedStops.has(idx)) return "delivered";
+    const redir = redirections.find(
+      (r) => r.stopIndex === idx && r.status === "transferred",
+    );
+    if (redir) return "redirected";
+    const disrupted = disruptions.find((d) => d.stopIndex === idx);
+    if (disrupted) return "disrupted";
+    if (deliveryMode && idx === currentStopIdx) return "current";
+    if (deliveryMode && idx > currentStopIdx) return "pending";
+    return "idle";
+  };
+
   const rainPoints = weatherData.filter((w) => w.severity >= 2);
   const stormPoints = weatherData.filter((w) => w.severity >= 4);
 
@@ -985,6 +1463,16 @@ const RouteOptimizer = () => {
                   color: "text-red-400",
                 },
                 { Icon: MapPin, label: "Multi-Stop", color: "text-green-400" },
+                {
+                  Icon: Repeat,
+                  label: "Dynamic Re-route",
+                  color: "text-yellow-400",
+                },
+                {
+                  Icon: ArrowLeftRight,
+                  label: "Postman Handoff",
+                  color: "text-purple-400",
+                },
               ].map(({ Icon, label, color }) => (
                 <div
                   key={label}
@@ -1066,6 +1554,33 @@ const RouteOptimizer = () => {
                     </button>
                   </div>
                 ))}
+
+                {/* Traffic Refresh Button */}
+                {routeResults && (
+                  <div className="pt-2 border-t border-[#2a2a2a]">
+                    <button
+                      onClick={refreshTrafficData}
+                      disabled={trafficRefreshing}
+                      className="w-full px-3 py-2.5 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                    >
+                      {trafficRefreshing ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />{" "}
+                          Refreshing Traffic...
+                        </>
+                      ) : (
+                        <>
+                          <Car className="w-3.5 h-3.5" /> Refresh Traffic Data
+                        </>
+                      )}
+                    </button>
+                    {lastTrafficRefresh && (
+                      <p className="text-center text-xs text-gray-600 mt-1.5">
+                        Updated {lastTrafficRefresh.toLocaleTimeString()}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Location list */}
@@ -1118,49 +1633,136 @@ const RouteOptimizer = () => {
                     </div>
                   )}
 
-                  <div className="space-y-2 max-h-60 overflow-y-auto">
-                    {markers.map((m, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-2 p-2 bg-black/30 rounded-xl border border-[#2a2a2a]"
-                      >
+                  <div className="space-y-2 max-h-72 overflow-y-auto">
+                    {markers.map((m, i) => {
+                      const status = getStopDeliveryStatus(i);
+                      const isCurrentStop =
+                        deliveryMode && i === currentStopIdx;
+                      const redir = redirections.find((r) => r.stopIndex === i);
+                      return (
                         <div
-                          className="w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold text-black flex-shrink-0 mt-0.5"
-                          style={{
-                            backgroundColor: getPriorityMarkerColor(m.priority),
-                          }}
+                          key={i}
+                          className={`flex items-start gap-2 p-2 rounded-xl border transition-all ${
+                            isCurrentStop
+                              ? "bg-[#FFC000]/5 border-[#FFC000]/40"
+                              : status === "delivered"
+                                ? "bg-green-500/5 border-green-500/20 opacity-60"
+                                : status === "redirected"
+                                  ? "bg-purple-500/5 border-purple-500/20 opacity-60"
+                                  : status === "disrupted"
+                                    ? "bg-red-500/5 border-red-500/20 opacity-60"
+                                    : "bg-black/30 border-[#2a2a2a]"
+                          }`}
                         >
-                          {i + 1}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs text-white truncate font-medium">
-                            {m.name?.split(",")[0]}
-                          </p>
-                          <select
-                            value={m.priority}
-                            onChange={(e) => updatePriority(i, e.target.value)}
-                            className="mt-1 text-xs bg-transparent border border-[#333] rounded-lg px-2 py-0.5 text-gray-400 focus:outline-none focus:border-[#FFC000]"
+                          <div
+                            className="w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold text-black flex-shrink-0 mt-0.5"
+                            style={{
+                              backgroundColor: getPriorityMarkerColor(
+                                m.priority,
+                              ),
+                            }}
                           >
-                            {Object.entries(PRIORITIES).map(([k, v]) => (
-                              <option key={k} value={k}>
-                                {v.label}
-                              </option>
-                            ))}
-                          </select>
+                            {status === "delivered"
+                              ? "✓"
+                              : status === "redirected"
+                                ? "↗"
+                                : status === "disrupted"
+                                  ? "!"
+                                  : i + 1}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-white truncate font-medium">
+                              {m.name?.split(",")[0]}
+                            </p>
+                            {/* Status badges */}
+                            {status === "current" && (
+                              <span className="inline-flex items-center gap-1 text-xs text-[#FFC000] font-bold">
+                                <Radio className="w-3 h-3 animate-pulse" />{" "}
+                                Active
+                              </span>
+                            )}
+                            {status === "delivered" && (
+                              <span className="text-xs text-green-400 font-bold">
+                                Delivered
+                              </span>
+                            )}
+                            {status === "redirected" && (
+                              <span className="text-xs text-purple-400 font-bold truncate">
+                                → {redir?.postman?.name || "Redirected"}
+                              </span>
+                            )}
+                            {status === "disrupted" && (
+                              <span className="text-xs text-red-400 font-bold">
+                                Disrupted · Skipped
+                              </span>
+                            )}
+                            {!deliveryMode && (
+                              <select
+                                value={m.priority}
+                                onChange={(e) =>
+                                  updatePriority(i, e.target.value)
+                                }
+                                className="mt-1 text-xs bg-transparent border border-[#333] rounded-lg px-2 py-0.5 text-gray-400 focus:outline-none focus:border-[#FFC000]"
+                              >
+                                {Object.entries(PRIORITIES).map(([k, v]) => (
+                                  <option key={k} value={k}>
+                                    {v.label}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+
+                            {/* Delivery mode per-stop actions */}
+                            {deliveryMode &&
+                              status !== "delivered" &&
+                              status !== "disrupted" &&
+                              status !== "redirected" && (
+                                <div className="flex gap-1 mt-1 flex-wrap">
+                                  {isCurrentStop && (
+                                    <button
+                                      onClick={() => markStopDelivered(i)}
+                                      className="px-2 py-0.5 bg-green-500/10 border border-green-500/30 text-green-400 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-green-500/20 transition-colors"
+                                    >
+                                      <CheckCircle className="w-3 h-3" /> Done
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => {
+                                      setDisruptionTarget(i);
+                                      setShowDisruptionModal(true);
+                                    }}
+                                    className="px-2 py-0.5 bg-red-500/10 border border-red-500/30 text-red-400 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-red-500/20 transition-colors"
+                                  >
+                                    <ShieldAlert className="w-3 h-3" /> Issue
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      flagForRedirection(i, "Address issue")
+                                    }
+                                    className="px-2 py-0.5 bg-purple-500/10 border border-purple-500/30 text-purple-400 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-purple-500/20 transition-colors"
+                                  >
+                                    <PhoneForwarded className="w-3 h-3" /> Hand
+                                    off
+                                  </button>
+                                </div>
+                              )}
+                          </div>
+                          {!deliveryMode && (
+                            <button
+                              onClick={() => deleteLocation(i)}
+                              className="text-gray-600 hover:text-red-400 transition-colors flex-shrink-0 mt-0.5"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
-                        <button
-                          onClick={() => deleteLocation(i)}
-                          className="text-gray-600 hover:text-red-400 transition-colors flex-shrink-0 mt-0.5"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   <button
                     onClick={optimizeRoute}
-                    disabled={optimizing || markers.length < 2}
+                    disabled={optimizing || markers.length < 2 || deliveryMode}
                     className="w-full mt-4 px-4 py-3 bg-[#FFC000] hover:bg-[#E5AC00] text-black font-bold text-sm rounded-xl flex items-center justify-center gap-2 transition-all disabled:opacity-50 shadow-lg shadow-[#FFC000]/20"
                   >
                     {optimizing ? (
@@ -1174,6 +1776,48 @@ const RouteOptimizer = () => {
                       </>
                     )}
                   </button>
+
+                  {/* Start / End Delivery */}
+                  {routeResults && !deliveryMode && (
+                    <button
+                      onClick={startDelivery}
+                      className="w-full mt-2 px-4 py-3 bg-green-600 hover:bg-green-500 text-white font-bold text-sm rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-green-500/20"
+                    >
+                      <Play className="w-4 h-4" /> Start Delivery
+                    </button>
+                  )}
+                  {deliveryMode && (
+                    <div className="space-y-2 mt-2">
+                      <div className="p-3 bg-green-500/5 border border-green-500/20 rounded-xl">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Radio className="w-3.5 h-3.5 text-green-400 animate-pulse" />
+                          <span className="text-xs font-bold text-green-400">
+                            Delivery in progress
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          {completedStops.size}/{markers.length} stops done
+                          {redirectionLog.length > 0 &&
+                            ` · ${redirectionLog.length} handoffs`}
+                        </p>
+                        {/* Progress bar */}
+                        <div className="mt-2 h-1.5 bg-[#333] rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-green-500 rounded-full transition-all"
+                            style={{
+                              width: `${(completedStops.size / markers.length) * 100}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <button
+                        onClick={endDelivery}
+                        className="w-full px-4 py-2.5 bg-[#1A1A1A] hover:bg-[#252525] text-red-400 border border-red-500/30 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all"
+                      >
+                        <XCircle className="w-3.5 h-3.5" /> End Delivery Session
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1352,6 +1996,322 @@ const RouteOptimizer = () => {
                     </div>
                   )}
 
+                  {/* ── TRAFFIC ANALYSIS PANEL ── */}
+                  {trafficLegs.length > 0 && showTrafficPanel && (
+                    <div className="bg-[#1A1A1A] rounded-2xl border border-[#333] overflow-hidden">
+                      <div className="p-4 flex items-center justify-between border-b border-[#333]">
+                        <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                          <Car className="w-4 h-4 text-orange-400" /> Live
+                          Traffic Analysis
+                        </h2>
+                        <div className="flex items-center gap-2">
+                          {lastTrafficRefresh && (
+                            <span className="text-xs text-gray-500">
+                              {lastTrafficRefresh.toLocaleTimeString()}
+                            </span>
+                          )}
+                          <button
+                            onClick={refreshTrafficData}
+                            disabled={trafficRefreshing}
+                            className="text-gray-500 hover:text-[#FFC000] transition-colors"
+                          >
+                            <RefreshCw
+                              className={`w-3.5 h-3.5 ${trafficRefreshing ? "animate-spin" : ""}`}
+                            />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="divide-y divide-[#222]">
+                        {trafficLegs.map((leg, i) => {
+                          const c = getCongestionColor(leg.congestionLevel);
+                          return (
+                            <div
+                              key={i}
+                              className="px-4 py-3 flex items-center gap-3"
+                            >
+                              <div
+                                className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${c.bg} border ${c.border}`}
+                              >
+                                <TrendingUp className={`w-4 h-4 ${c.text}`} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs text-white font-medium">
+                                  Stop {i + 1} → Stop {i + 2}
+                                </p>
+                                <p
+                                  className={`text-xs font-bold capitalize ${c.text}`}
+                                >
+                                  {leg.congestionLevel} traffic
+                                  {leg.delayMin > 0 && (
+                                    <span className="ml-1 text-orange-400">
+                                      · +{leg.delayMin}min delay
+                                    </span>
+                                  )}
+                                </p>
+                              </div>
+                              <div className="text-right flex-shrink-0">
+                                <p className="text-sm font-bold text-white">
+                                  {formatDuration(leg.durationWithTraffic)}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  base: {formatDuration(leg.duration)}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {trafficLegs.some(
+                        (l) => l.congestionLevel !== "light",
+                      ) && (
+                        <div className="p-3 border-t border-[#333] bg-orange-500/5">
+                          <p className="text-xs text-orange-400 font-medium flex items-center gap-2">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            {
+                              trafficLegs.filter(
+                                (l) => l.congestionLevel === "heavy",
+                              ).length
+                            }{" "}
+                            heavy congestion and{" "}
+                            {
+                              trafficLegs.filter(
+                                (l) => l.congestionLevel === "moderate",
+                              ).length
+                            }{" "}
+                            moderate segments detected. Consider re-dispatching.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── DYNAMIC RE-ROUTING PANEL ── */}
+                  {(rerouteResult || disruptions.length > 0) && (
+                    <div className="bg-[#1A1A1A] rounded-2xl border border-[#333] overflow-hidden">
+                      <div className="p-4 border-b border-[#333]">
+                        <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                          <Repeat className="w-4 h-4 text-red-400" /> Dynamic
+                          Re-routing
+                        </h2>
+                      </div>
+
+                      {disruptions.length > 0 && (
+                        <div className="divide-y divide-[#222]">
+                          {disruptions.map((d, i) => (
+                            <div
+                              key={i}
+                              className="px-4 py-3 flex items-start gap-3"
+                            >
+                              <div className="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center flex-shrink-0">
+                                <Construction className="w-4 h-4 text-red-400" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs text-white font-bold">
+                                  {d.description}
+                                </p>
+                                <p className="text-xs text-gray-500 mt-0.5">
+                                  Stop {d.stopIndex + 1} ·{" "}
+                                  {d.timestamp.toLocaleTimeString()}
+                                </p>
+                              </div>
+                              <span className="text-xs font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-lg flex-shrink-0">
+                                Skipped
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {rerouteLoading && (
+                        <div className="p-4 flex items-center gap-2 text-sm text-[#FFC000]">
+                          <RefreshCw className="w-4 h-4 animate-spin" />{" "}
+                          Recalculating route...
+                        </div>
+                      )}
+
+                      {rerouteResult && !rerouteLoading && (
+                        <div className="p-4 bg-green-500/5 border-t border-[#333]">
+                          <p className="text-xs font-bold text-green-400 flex items-center gap-2 mb-2">
+                            <CheckCircle className="w-3.5 h-3.5" /> Route
+                            recalculated successfully
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            Skipped:{" "}
+                            <span className="text-white font-medium">
+                              {rerouteResult.skippedStop?.name?.split(",")[0]}
+                            </span>
+                          </p>
+                          <div className="flex gap-4 mt-2">
+                            <div>
+                              <p className="text-xs text-gray-500">New ETA</p>
+                              <p className="text-sm font-bold text-white">
+                                {formatDuration(rerouteResult.rerouteDuration)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">
+                                New Distance
+                              </p>
+                              <p className="text-sm font-bold text-white">
+                                {formatDistance(rerouteResult.rerouteDistance)}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500">Remaining</p>
+                              <p className="text-sm font-bold text-white">
+                                {rerouteResult.newRoute.length} stops
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── INTER-POSTMAN REDIRECTION PANEL ── */}
+                  {(redirectionLog.length > 0 ||
+                    showRedirectPanel !== null) && (
+                    <div className="bg-[#1A1A1A] rounded-2xl border border-[#333] overflow-hidden">
+                      <div className="p-4 flex items-center justify-between border-b border-[#333]">
+                        <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                          <ArrowLeftRight className="w-4 h-4 text-purple-400" />{" "}
+                          Postman Handoffs
+                        </h2>
+                        {redirectionLog.length > 0 && (
+                          <button
+                            onClick={() =>
+                              setShowRedirectionLog(!showRedirectionLog)
+                            }
+                            className="text-xs text-purple-400 font-bold hover:text-purple-300"
+                          >
+                            {showRedirectionLog
+                              ? "Hide"
+                              : `View ${redirectionLog.length}`}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Select postman panel */}
+                      {showRedirectPanel !== null && (
+                        <div className="p-4 border-b border-[#333] bg-purple-500/5">
+                          <p className="text-xs font-bold text-purple-400 mb-3 flex items-center gap-2">
+                            <Users className="w-3.5 h-3.5" />
+                            Assign Stop {showRedirectPanel + 1} to a nearby
+                            postman
+                          </p>
+                          {loadingNearby ? (
+                            <div className="flex items-center gap-2 text-xs text-gray-400 py-2">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />{" "}
+                              Finding nearby postmen...
+                            </div>
+                          ) : nearbyPostmen.filter((p) => p.is_available)
+                              .length === 0 ? (
+                            <p className="text-xs text-gray-500 py-2">
+                              No available postmen within 15 km.
+                            </p>
+                          ) : (
+                            <div className="space-y-2">
+                              {nearbyPostmen
+                                .filter((p) => p.is_available)
+                                .slice(0, 4)
+                                .map((postman) => (
+                                  <button
+                                    key={postman.postman_id}
+                                    onClick={() =>
+                                      assignRedirection(
+                                        showRedirectPanel,
+                                        postman,
+                                      )
+                                    }
+                                    className="w-full flex items-center gap-3 px-3 py-2.5 bg-black/40 hover:bg-purple-500/10 border border-[#333] hover:border-purple-500/30 rounded-xl transition-all text-left"
+                                  >
+                                    <div className="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center flex-shrink-0">
+                                      <UserCheck className="w-4 h-4 text-purple-400" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-xs text-white font-bold">
+                                        {postman.name}
+                                      </p>
+                                      <p className="text-xs text-gray-500">
+                                        {postman.zone || postman.email} ·{" "}
+                                        {postman.deliveries_left} stops left
+                                      </p>
+                                    </div>
+                                    <div className="text-right flex-shrink-0">
+                                      <p className="text-xs font-bold text-purple-400">
+                                        {postman.distance_km} km
+                                      </p>
+                                      <p className="text-xs text-green-400">
+                                        Available
+                                      </p>
+                                    </div>
+                                  </button>
+                                ))}
+                            </div>
+                          )}
+                          <button
+                            onClick={() => setShowRedirectPanel(null)}
+                            className="mt-2 w-full text-xs text-gray-600 hover:text-gray-400 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Redirection log */}
+                      {showRedirectionLog && redirectionLog.length > 0 && (
+                        <div className="divide-y divide-[#222]">
+                          {redirectionLog.map((event) => (
+                            <div
+                              key={event.id}
+                              className="px-4 py-3 flex items-start gap-3"
+                            >
+                              <div className="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center flex-shrink-0">
+                                <LogIn className="w-4 h-4 text-purple-400" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs text-white font-bold truncate">
+                                  {event.stopName?.split(",")[0]}
+                                </p>
+                                <p className="text-xs text-gray-500 mt-0.5">
+                                  → {event.postman?.name} ·{" "}
+                                  {event.postman?.zone}
+                                </p>
+                                <p className="text-xs text-gray-600">
+                                  {event.reason} ·{" "}
+                                  {event.timestamp.toLocaleTimeString()}
+                                </p>
+                              </div>
+                              <span className="text-xs font-bold text-purple-400 flex-shrink-0">
+                                Transferred
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {!showRedirectionLog && redirectionLog.length > 0 && (
+                        <div className="p-3 flex items-center gap-2">
+                          <div className="flex -space-x-1">
+                            {redirectionLog.slice(0, 3).map((_, i) => (
+                              <div
+                                key={i}
+                                className="w-6 h-6 rounded-full bg-purple-500/20 border border-purple-500/30 flex items-center justify-center"
+                              >
+                                <UserCheck className="w-3 h-3 text-purple-400" />
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-xs text-gray-400">
+                            {redirectionLog.length} stop
+                            {redirectionLog.length !== 1 ? "s" : ""}{" "}
+                            successfully handed off
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Share panel */}
                   <div className="bg-[#1A1A1A] rounded-2xl border border-[#333] p-5 space-y-4">
                     <h3 className="text-sm font-bold text-white">
@@ -1437,6 +2397,59 @@ const RouteOptimizer = () => {
           </div>
         )}
       </div>
+
+      {/* ═══ DISRUPTION MODAL ═══ */}
+      {showDisruptionModal && disruptionTarget !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+          <div className="bg-[#1A1A1A] border border-[#333] rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-red-500/10 rounded-xl flex items-center justify-center">
+                <Siren className="w-5 h-5 text-red-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  Report Disruption
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Stop {disruptionTarget + 1} — route will be recalculated
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              {[
+                { type: "closure", label: "Road Closure", icon: XCircle },
+                { type: "accident", label: "Accident", icon: ShieldAlert },
+                { type: "flooding", label: "Flooding", icon: Droplets },
+                {
+                  type: "construction",
+                  label: "Roadworks",
+                  icon: Construction,
+                },
+              ].map(({ type, label, icon: Icon }) => (
+                <button
+                  key={type}
+                  onClick={() => reportDisruption(disruptionTarget, type)}
+                  className="flex flex-col items-center gap-2 p-3 bg-black/40 hover:bg-red-500/10 border border-[#333] hover:border-red-500/30 rounded-xl transition-all"
+                >
+                  <Icon className="w-5 h-5 text-red-400" />
+                  <span className="text-xs text-white font-medium">
+                    {label}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => {
+                setShowDisruptionModal(false);
+                setDisruptionTarget(null);
+              }}
+              className="w-full py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

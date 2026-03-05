@@ -1,16 +1,17 @@
-import React, { useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { Menu, X, Package } from 'lucide-react';
+import React, { useState } from "react";
+import { Link, useLocation } from "react-router-dom";
+import { Menu, X, Package } from "lucide-react";
 
 const Navbar = () => {
   const [isOpen, setIsOpen] = useState(false);
   const location = useLocation();
 
   const navLinks = [
-    { name: 'Home', path: '/' },
-    { name: 'Dashboard', path: '/dashboard' },
-    { name: 'Routes', path: '/route-optimizer' },
-    { name: 'Profile', path: '/profile' },
+    { name: "Home", path: "/" },
+    { name: "Dashboard", path: "/dashboard" },
+    { name: "Routes", path: "/route-optimizer" },
+    { name: "Postmen", path: "/postmen" },
+    { name: "Profile", path: "/profile" },
   ];
 
   const isActive = (path) => location.pathname === path;
@@ -19,8 +20,9 @@ const Navbar = () => {
     // Updated border color to match the subtle dark theme
     <nav className="sticky top-0 z-50 bg-black border-b border-[#333333] shadow-2xl">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-20"> {/* Increased height slightly for premium feel */}
-          
+        <div className="flex items-center justify-between h-20">
+          {" "}
+          {/* Increased height slightly for premium feel */}
           {/* Logo */}
           <Link to="/" className="flex items-center gap-3 group">
             <div className="relative">
@@ -32,13 +34,18 @@ const Navbar = () => {
             </div>
             <div className="flex flex-col">
               <div className="flex items-baseline gap-1">
-                <span className="text-2xl font-bold text-white tracking-tight">Smart</span>
-                <span className="text-2xl font-bold text-[#FFC000]">Postal</span>
+                <span className="text-2xl font-bold text-white tracking-tight">
+                  Smart
+                </span>
+                <span className="text-2xl font-bold text-[#FFC000]">
+                  Postal
+                </span>
               </div>
-              <span className="text-[11px] text-gray-400 font-medium tracking-wider uppercase">Driver Hub</span>
+              <span className="text-[11px] text-gray-400 font-medium tracking-wider uppercase">
+                Driver Hub
+              </span>
             </div>
           </Link>
-
           {/* Desktop Nav Links */}
           <div className="hidden md:flex items-center gap-1">
             {navLinks.map((link) => (
@@ -47,15 +54,14 @@ const Navbar = () => {
                 to={link.path}
                 className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all duration-300 ${
                   isActive(link.path)
-                    ? 'bg-[#FFC000] text-black shadow-lg shadow-[#FFC000]/25 translate-y-[-1px]'
-                    : 'text-gray-400 hover:text-[#FFC000] hover:bg-[#1A1A1A]'
+                    ? "bg-[#FFC000] text-black shadow-lg shadow-[#FFC000]/25 translate-y-[-1px]"
+                    : "text-gray-400 hover:text-[#FFC000] hover:bg-[#1A1A1A]"
                 }`}
               >
                 {link.name}
               </Link>
             ))}
           </div>
-
           {/* Auth Buttons */}
           <div className="hidden md:flex items-center gap-4">
             <Link
@@ -71,7 +77,6 @@ const Navbar = () => {
               Sign Up
             </Link>
           </div>
-
           {/* Mobile Menu Button */}
           <button
             className="md:hidden p-2 rounded-xl text-gray-300 hover:bg-[#1A1A1A] hover:text-[#FFC000] transition-colors"
@@ -93,8 +98,8 @@ const Navbar = () => {
                 onClick={() => setIsOpen(false)}
                 className={`block px-4 py-3 rounded-xl text-sm font-bold transition-all ${
                   isActive(link.path)
-                    ? 'bg-[#FFC000] text-black shadow-lg shadow-[#FFC000]/20'
-                    : 'text-gray-300 hover:bg-[#1A1A1A] hover:text-[#FFC000]'
+                    ? "bg-[#FFC000] text-black shadow-lg shadow-[#FFC000]/20"
+                    : "text-gray-300 hover:bg-[#1A1A1A] hover:text-[#FFC000]"
                 }`}
               >
                 {link.name}

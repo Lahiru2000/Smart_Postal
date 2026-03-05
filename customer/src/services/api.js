@@ -1,54 +1,93 @@
-import axios from 'axios';
+import axios from "axios";
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const api = axios.create({
   baseURL: API_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  headers: { "Content-Type": "application/json" },
 });
 
-// Attach token to every request if available
+// Attach Bearer token to every request
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+  const token = localStorage.getItem("token");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// Auth APIs
-export const registerUser = (data) => api.post('/auth/register', data);
-export const loginUser = (data) => api.post('/auth/login', data);
+// ── Auth ──────────────────────────────────────────────────────────────────────
+export const registerUser = (data) => api.post("/auth/register", data);
+export const loginUser = (data) => api.post("/auth/login", data);
 
-// Shipment APIs
-export const createShipment = (data) => api.post('/shipments/', data);
-export const getShipments = () => api.get('/shipments/');
+// ── Shipments ─────────────────────────────────────────────────────────────────
+export const getShipments = () => api.get("/shipments/");
 export const getShipmentById = (id) => api.get(`/shipments/${id}`);
-export const trackShipment = (trackingNumber) => api.get(`/shipments/track/${trackingNumber}`);
 export const updateShipment = (id, data) => api.put(`/shipments/${id}`, data);
-export const deleteShipment = (id) => api.delete(`/shipments/${id}`);
 
-// Voice Auth APIs
-export const getEnrollmentStatus = () => api.get('/voice-auth/enrollment/status');
-export const startEnrollment = () => api.post('/voice-auth/enrollment/start');
-export const resetVoiceProfile = () => api.delete('/voice-auth/enrollment/reset');
-export const submitEnrollmentSample = (enrollmentId, audioFile) => {
-  const formData = new FormData();
-  formData.append('audio', audioFile);
-  return api.post(`/voice-auth/enrollment/${enrollmentId}/sample`, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
-};
+// ── Voice Verification ────────────────────────────────────────────────────────
+export const startVoiceVerification = (shipmentId) =>
+  api.post("/voice-auth/verification/start", { shipment_id: shipmentId });
 export const getVerificationStatus = (verificationId) =>
   api.get(`/voice-auth/verification/${verificationId}/status`);
-export const submitVerification = (verificationId, audioFile) => {
-  const formData = new FormData();
-  formData.append('audio', audioFile);
-  return api.post(`/voice-auth/verification/${verificationId}/submit`, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
-};
 
+// ── Postman Location ──────────────────────────────────────────────────────────
+export const updatePostmanLocation = (payload) =>
+  api.put("/delivery/location", payload);
+
+export const getNearbyPostmen = (lat, lng, radiusKm = 10) =>
+  api.get("/delivery/postmen/nearby", {
+    params: { lat, lng, radius: radiusKm },
+  });
+
+// ── Delivery Sessions ─────────────────────────────────────────────────────────
+export const startDeliverySession = (payload) =>
+  api.post("/delivery/sessions", payload);
+
+export const getDeliverySession = (sessionId) =>
+  api.get(`/delivery/sessions/${sessionId}`);
+
+export const getMyActiveSession = () => api.get("/delivery/sessions/active/me");
+
+export const completeStop = (sessionId, stopIndex) =>
+  api.patch(`/delivery/sessions/${sessionId}/stop/${stopIndex}/complete`);
+
+export const endDeliverySession = (sessionId, sessionStatus = "completed") =>
+  api.patch(`/delivery/sessions/${sessionId}/end`, { status: sessionStatus });
+
+// ── Disruptions ───────────────────────────────────────────────────────────────
+export const reportDisruption = (payload) =>
+  api.post("/delivery/disruptions", payload);
+
+export const getSessionDisruptions = (sessionId) =>
+  api.get(`/delivery/sessions/${sessionId}/disruptions`);
+
+export const resolveDisruption = (disruptionId, payload) =>
+  api.patch(`/delivery/disruptions/${disruptionId}/resolve`, payload);
+
+// ── Redirections ──────────────────────────────────────────────────────────────
+export const createRedirection = (payload) =>
+  api.post("/delivery/redirections", payload);
+
+export const getSessionRedirections = (sessionId) =>
+  api.get(`/delivery/sessions/${sessionId}/redirections`);
+
+export const acceptRedirection = (redirectionId) =>
+  api.patch(`/delivery/redirections/${redirectionId}/accept`);
+
+// ── Postman Management ────────────────────────────────────────────────────────
+export const getAllPostmen = () => api.get("/delivery/postmen");
+
+export const createPostman = (payload) =>
+  api.post("/delivery/postmen", payload);
+
+export const deletePostman = (postmanId) =>
+  api.delete(`/delivery/postmen/${postmanId}`);
+
+// ── Handoff Event Management ──────────────────────────────────────────────────
+export const getAllRedirections = (params = {}) =>
+  api.get("/delivery/redirections", { params });
+
+export const getRedirectionStats = () =>
+  api.get("/delivery/redirections/stats");
+
+// ── Default export must be last ───────────────────────────────────────────────
 export default api;
