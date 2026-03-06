@@ -130,9 +130,13 @@ export function useLiveAPI() {
                     });
                     data = await res.json();
                   } else if (call.name === 'send_registration_link') {
-                    const rawPhone = (call.args.phone_number || '').replace(/[^0-9]/g, '');
-                    // Validate: must be 10 digits starting with 07
-                    const isValid = /^07\d{8}$/.test(rawPhone);
+                    let phone = (call.args.phone_number || '').replace(/[^0-9]/g, '');
+                    // Normalize: +94XXXXXXXXX or 94XXXXXXXXX → 0XXXXXXXXX
+                    if (phone.startsWith('94') && phone.length === 11) {
+                      phone = '0' + phone.slice(2);
+                    }
+                    // Validate: must be 10 digits starting with 0
+                    const isValid = /^0\d{9}$/.test(phone);
                     if (!isValid) {
                       data = {
                         success: false,
@@ -144,19 +148,19 @@ export function useLiveAPI() {
                       const waText = encodeURIComponent(
                         `Smart Postal ලියාපදිංචි වීමට මෙම සබැඳිය භාවිතා කරන්න: ${regUrl}`
                       );
-                      const intlPhone = '94' + rawPhone.slice(1);
+                      const intlPhone = '94' + phone.slice(1);
                       const waLink = `https://wa.me/${intlPhone}?text=${waText}`;
-                      console.log('[SmartPostal] Registration link toast triggered:', { phone: rawPhone, waLink });
+                      console.log('[SmartPostal] Registration link toast triggered:', { phone, waLink });
                       setNotification({
                         type: 'registration_link',
-                        phone: rawPhone,
+                        phone,
                         registrationUrl: regUrl,
                         whatsappLink: waLink,
                         timestamp: Date.now(),
                       });
                       data = {
                         success: true,
-                        message: `Registration link sent to ${rawPhone} via WhatsApp`,
+                        message: `Registration link sent to ${phone} via WhatsApp`,
                         registration_url: regUrl,
                         whatsapp_link: waLink,
                       };
@@ -235,13 +239,38 @@ export function useLiveAPI() {
             '\n• පරිශීලකයා ලියාපදිංචි වීම ගැන ඇසුවොත්:' +
             '\n  "Smart Postal සේවාවට ලියාපදිංචි වීම පහසුයි. නම, ඊමේල්, දුරකථන අංකය, මුරපදයක් දී Sign Up ඔබන්න.' +
             '\n   WhatsApp එකට ලියාපදිංචි link එක යවන්නද? එහෙනම් ඔබේ දුරකථන අංකය කියන්න."' +
-            '\n• දුරකථන අංකය ලැබුණු විට: send_registration_link tool call කරන්න.' +
-            '\n• ශ්‍රී ලංකා අංකය: 07 න් පටන්ගන්නා ඉලක්කම් 10ක අංකයක් (උදා: 0771234567).' +
-            '\n• "සූන්‍ය හත් හත් එක් දෙක තුන් හතර පහ හය හත්" වැනි ආකාරයට කිව්වොත් ඉලක්කම් 10ට ඒකතු කරන්න.' +
-            '\n• අංකය 07 න් පටන් නොගත්තොත් හෝ ඉලක්කම් 10ක් නැත්නම්: "කරුණාකර 07 න් පටන්ගන්නා ඉලක්කම් 10ක දුරකථන අංකයක් කියන්න." කියන්න.' +
-            '\n• tool success ලැබුණු පසු: "ලියාපදිංචි සබැඳිය ඔබේ WhatsApp එකට යැව්වා!" කියන්න.' +
-            '\n• tool error (invalid_phone) ලැබුණොත්: "කණගාටුයි, එය වලංගු අංකයක් නොවේ. 07 න් පටන්ගන්නා ඉලක්කම් 10ක අංකයක් කියන්න." කියන්න.' +
-            '\n\n═══ දෝෂ / ඇමතුම අවසානය ═══' +
+            '\n' +
+            '\n═══ දුරකථන අංක හඳුනාගැනීම (Phone Number Module) ═══' +
+            '\n' +
+            '\n1. සිංහල කතනයෙන් අංක parse කිරීම:' +
+            '\n   • තනි ඉලක්කම්: බිංදුව(0), එක(1), දෙක(2), තුන(3), හතර(4), පහ(5), හය(6), හත(7), අට(8), නවය/නමය(9)' +
+            '\n   • කාණ්ඩ (chunked) ඉලක්කම් — ගණිතමය ලෙස convert කරන්න:' +
+            '\n     "හැත්තෑ එකයි" = 71' +
+            '\n     "දෙසිය පනස් හතරයි" = 254' +
+            '\n     "බිංදුවයි හැත්තෑ හතයි" = 077' +
+            '\n   • සියළු parsed කොටස් concatenate කරන්න (spaces නැතිව):' +
+            '\n     "බිංදුවයි හැත්තෑ හතයි, එකසිය විසි තුනයි, හාරසිය පනස් හයයි"' +
+            '\n     → 0 + 77 + 123 + 456 = 0771230456 (ඉලක්කම් 10)' +
+            '\n' +
+            '\n2. Validation (ශ්‍රී ලංකා ප්‍රමිතිය):' +
+            '\n   • දිග: නිවැරදිව ඉලක්කම් 10ක් විය යුතුයි.' +
+            '\n   • මුලින් 0: අංකය 0 න් ආරම්භ විය යුතුයි.' +
+            '\n   • ජාල/ප්‍රදේශ code: 2-3 ඉලක්කම් වලංගු prefix එකක් (Mobile: 070,071,072,074,075,076,077,078 / Landline: 011,081,031 ආදිය).' +
+            '\n   • ඉලක්කම් 9ක් ලැබුණොත් 0 එක මඟ හැරුණා කියා සිතා නැවත අසන්න.' +
+            '\n' +
+            '\n3. තහවුරු කිරීම (Confirmation):' +
+            '\n   • හැම විටම ඉලක්කම් එකින් එක ආපසු කියන්න:' +
+            '\n     "ස්තූතියි. මම අංකය තහවුරු කරගන්නම්. බිංදුවයි, හතයි, එකයි, දෙකයි, තුනයි, හතරයි, පහයි, හයයි, හතයි, අට. එය නිවැරදිද?"' +
+            '\n   • පරිශීලකයා "ඔව්" කිව්වොත් send_registration_link tool call කරන්න.' +
+            '\n   • "නැහැ" කිව්වොත් නැවත අංකය අසන්න.' +
+            '\n' +
+            '\n4. Error Responses:' +
+            '\n   • දිග වැරදි (9 හෝ 11+): "මට සමා වෙන්න, එම අංකයේ අඩුවක් තිබෙන බව පෙනෙනවා. ශ්‍රී ලංකාවේ දුරකථන අංකයක අංක දහයක් තිබිය යුතුයි. කරුණාකර නැවත වරක් පැහැදිලිව කියන්න පුළුවන්ද?"' +
+            '\n   • වැරදි prefix (0 න් පටන් නොගත්): "මට සමා වෙන්න, එම අංකය නිවැරදි දුරකථන අංකයක් ලෙස හඳුනාගැනීමට අපහසුයි. කරුණාකර බිංදුව අංකයෙන් ආරම්භ කර නැවත කියන්න."' +
+            '\n   • tool error (invalid_phone): "කණගාටුයි, එය වලංගු අංකයක් නොවේ. බිංදුව හතක් ආකාරයට ආරම්භ වන අංක දහයක් කියන්න."' +
+            '\n   • tool success: "ලියාපදිංචි සබැඳිය ඔබේ WhatsApp එකට යැව්වා!"' +
+            '\n' +
+            '\n═══ දෝෂ / ඇමතුම අවසානය ═══' +
             '\n• නොතේරුණොත්: "මට එය පැහැදිලිව ඇසුණේ නැහැ. කරුණාකර නැවත කියන්න."' +
             '\n• අවසානය: "ස්මාර්ට් තැපැල් සේවාව ඇමතීම ගැන ස්තූතියි. සුබ දවසක්!"' +
             '\n\n═══ නීති ═══' +
