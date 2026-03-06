@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Mic, MicOff } from 'lucide-react';
 import { useLiveAPI } from '../hooks/useLiveAPI';
 
@@ -21,10 +21,191 @@ const speakingKeyframes = `
 `;
 
 const VoiceAssistant = () => {
-  const { isConnected, isSpeaking, connect, disconnect, status } = useLiveAPI();
+  const { isConnected, isSpeaking, connect, disconnect, status, notification, clearNotification, confirmPhoneNumber, cancelPhoneConfirmation } = useLiveAPI();
+  const autoDismissRef = React.useRef(null);
+  const phoneInputRef = React.useRef(null);
+
+  // Auto-dismiss toast after 20 seconds (not for confirm_phone — user needs time to edit)
+  useEffect(() => {
+    if (autoDismissRef.current) clearTimeout(autoDismissRef.current);
+    if (notification) {
+      console.log('[VoiceAssistant] Toast notification received:', notification);
+      if (notification.type === 'confirm_phone') {
+        setTimeout(() => { if (phoneInputRef.current) phoneInputRef.current.value = notification.phone || ''; }, 50);
+      } else {
+        autoDismissRef.current = setTimeout(clearNotification, 20000);
+      }
+    }
+    return () => { if (autoDismissRef.current) clearTimeout(autoDismissRef.current); };
+  }, [notification, clearNotification]);
 
   return (
     <div className="min-h-screen bg-black pt-24 pb-12 px-4 flex items-start justify-center">
+      {/* Phone Number Confirmation Card */}
+      {notification?.type === 'confirm_phone' && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 24,
+            right: 24,
+            zIndex: 9999,
+            width: 380,
+            backgroundColor: '#1A1A1A',
+            border: '2px solid #FFC000',
+            borderRadius: 16,
+            padding: 20,
+            boxShadow: '0 8px 32px rgba(255, 192, 0, 0.3)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 24 }}>📞</span>
+              <span style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>Confirm Phone Number</span>
+            </div>
+            <button onClick={clearNotification} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>✕</button>
+          </div>
+          <p style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>
+            Detected number (edit if wrong):
+          </p>
+          <input
+            ref={phoneInputRef}
+            type="tel"
+            defaultValue={notification.phone || ''}
+            maxLength={10}
+            style={{
+              width: '100%',
+              backgroundColor: '#111',
+              border: '2px solid #444',
+              borderRadius: 10,
+              padding: '10px 14px',
+              color: '#fff',
+              fontFamily: 'monospace',
+              fontSize: 22,
+              fontWeight: 700,
+              letterSpacing: 4,
+              textAlign: 'center',
+              marginBottom: 12,
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+            onFocus={(e) => { e.target.style.borderColor = '#FFC000'; }}
+            onBlur={(e) => { e.target.style.borderColor = '#444'; }}
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => confirmPhoneNumber(phoneInputRef.current?.value || '')}
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                backgroundColor: '#25D366',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: 13,
+                padding: '10px 16px',
+                borderRadius: 12,
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              ✅ Confirm & Send
+            </button>
+            <button
+              onClick={cancelPhoneConfirmation}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+                backgroundColor: '#333',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: 13,
+                padding: '10px 16px',
+                borderRadius: 12,
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              ❌ Wrong
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp Registration Link Toast */}
+      {notification?.type === 'registration_link' && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 24,
+            right: 24,
+            zIndex: 9999,
+            width: 380,
+            backgroundColor: '#1A1A1A',
+            border: '2px solid #25D366',
+            borderRadius: 16,
+            padding: 20,
+            boxShadow: '0 8px 32px rgba(37, 211, 102, 0.3)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 24 }}>📱</span>
+              <span style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>Registration Link Ready</span>
+            </div>
+            <button onClick={clearNotification} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>✕</button>
+          </div>
+          <p style={{ color: '#aaa', fontSize: 12, marginBottom: 12 }}>
+            Phone: <span style={{ color: '#fff', fontFamily: 'monospace', fontWeight: 600 }}>{notification.phone}</span>
+          </p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <a
+              href={notification.whatsappLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                backgroundColor: '#25D366',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: 13,
+                padding: '10px 16px',
+                borderRadius: 12,
+                textDecoration: 'none',
+              }}
+            >
+              💬 Send via WhatsApp
+            </a>
+            <a
+              href={notification.registrationUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+                backgroundColor: '#FFC000',
+                color: '#000',
+                fontWeight: 700,
+                fontSize: 13,
+                padding: '10px 16px',
+                borderRadius: 12,
+                textDecoration: 'none',
+              }}
+            >
+              🔗 Open
+            </a>
+          </div>
+        </div>
+      )}
       <div className="w-full max-w-md">
         <div className="bg-[#111111] border border-[#222222] rounded-3xl overflow-hidden shadow-2xl">
           {/* Header */}
@@ -97,6 +278,7 @@ const VoiceAssistant = () => {
                 <li>📦 Track a parcel — &quot;TRK 1001 එකේ status එක දෙන්නද?&quot;</li>
                 <li>💰 Shipping rates — &quot;කොළඹ ඉඳන් කුරුණෑගල කිලෝ 2&quot;</li>
                 <li>📅 Reschedule — &quot;TRK 1002 එක හෙට දිනට වෙනස් කරන්න&quot;</li>
+                <li>📝 Register — &quot;ලියාපදිංචි වෙන්නේ කොහොමද?&quot;</li>
               </ul>
             </div>
           </div>
