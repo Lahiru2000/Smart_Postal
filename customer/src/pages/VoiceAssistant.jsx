@@ -1,5 +1,5 @@
-import React from 'react';
-import { Mic, MicOff } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { Mic, MicOff, X, ExternalLink } from 'lucide-react';
 import { useLiveAPI } from '../hooks/useLiveAPI';
 
 const speakingKeyframes = `

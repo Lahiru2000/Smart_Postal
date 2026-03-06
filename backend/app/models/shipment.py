@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
+from sqlalchemy import event
 from app.database import Base
 
 class Shipment(Base):
@@ -34,6 +35,12 @@ class Shipment(Base):
     media_type = Column(String(20), nullable=True)   # 'image' | 'video' | None
     
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # New fields (leader requirements)
+    package_location = Column(String(255), nullable=True)        # Current location of the parcel
+    not_answered_count = Column(Integer, default=0)              # Failed delivery attempts
+    payment_status = Column(String(50), default="Pending")       # Pending | Paid | COD
 
     voice_verification_required = Column(Boolean, default=False)
     voice_verification_status = Column(String(20), nullable=True)  # None, pending, approved, failed

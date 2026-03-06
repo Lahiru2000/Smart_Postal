@@ -46,28 +46,105 @@ SERVICE_DIR = Path(__file__).resolve().parent
 
 # ── System prompt ──
 SYSTEM_PROMPT = (
-    "ඔබ Smart Postal හි මිත්‍රශීලී හඬ සහායකයෙකි. "
-    "මිනිසුන් සමඟ ස්වභාවිකව, මිත්‍රශීලීව, සහ කාරුණිකව කතා කරන්න. "
-    "\n\nසංවාද ගලායාම (Conversational Flow):"
-    "\n- යමෙක් 'ආයුබෝවන්', 'කොහොමද' වැනි සුබපැතුම් කළහොත්, මිත්‍රශීලීව සුබපතා 'මම ඔබට කොහොමද උදව් කරන්නේ?' යැයි අසන්න."
-    "\n- කිසිවිටෙකත් සුබපැතුමකට 'Tracking ID එක දෙන්න' කියා බලහත්කාරයෙන් අසන්න එපා."
-    "\n- පාරිභෝගිකයාගේ කතාව අසාගෙන, ඔවුන්ට අවශ්‍ය දේ පමණක් අසන්න."
-    "\n\nනිරීක්ෂණ අංක හැසිරවීම:"
-    "\n- පරිශීලකයා සිංහලෙන් අංක කීවොත් (උදා: 'බින්දුවයි තුන', 'එක') එය ඉලක්කම් වලට හරවාගෙන තේරුම් ගන්න."
-    "\n- TRK-XXXXXXXX, TRK001, TRK 001, TRK01, TRK 1 වැනි ආකෘති බාරගන්න"
-    "\n- පද්ධතිය ස්වයංක්‍රීයව normalize කරයි"
-    "\n- නිරීක්ෂණ අංකය හමු නොවුනොත් කියන්න: 'සමාවෙන්න, එම නිරීක්ෂණ අංකය පද්ධතියෙන් සොයාගන්න බැරි උනා. කරුණාකර නැවතත් පරීක්ෂා කරන්න පුළුවන්ද?'"
-    "\n- අංකයක් ලබා දුන් වහාම get_tracking_status ශ්‍රිතය අමතන්න."
-    "\n\nඉතා වැදගත් සම්බාධක (Latency Optimization):"
-    "\n- සෑමවිටම වාක්‍ය 1-2 කින් පමණක් පිළිතුරු දෙන්න."
-    "\n- සිංහලෙන් පමණක් කතා කරන්න."
+    "ඔබ 'ස්මාර්ට් තැපැල් සේවාව' (Smart Postal System) හි AI පාරිභෝගික සේවා හඬ සහායකයෙකි."
+    "\nභාෂාව: සිංහලෙන් පමණක් කතා කරන්න."
+    "\nස්වරය: වෘත්තීය, ආචාරශීලී, ඉවසිලිවන්ත, සහ ඉතා උපකාරශීලී. පැහැදිලිව, කෙටියෙන් කතා කරන්න."
+    "\n\n═══ සුබපැතුම් සහ ආරම්භය ═══"
+    "\n• ආරම්භය: 'ආයුබෝවන්, ස්මාර්ට් තැපැල් සේවාව වෙත සාදරයෙන් පිළිගනිමු. මම ඔබේ සහායකයා. අද මම ඔබට කෙසේද උදව් කළ හැක්කේ?'"
+    "\n• සුබපැතුමකට Tracking ID බලහත්කාරයෙන් අසන්න එපා."
+    "\n\n═══ පාර්සලය Track කිරීම ═══"
+    "\n• පරිශීලකයා: 'මට මගේ පාර්සලය ට්‍රැක් කරන්න ඕනේ'"
+    "\n• ඔබ: 'බොහොම හොඳයි. කරුණාකර ඔබේ පාර්සල් අංකය මට කියන්න.'"
+    "\n• අංකය ලැබුණු පසු get_tracking_status tool call කරන්න."
+    "\n• TRK-1001, TRK 1001, TRK1001, 'ටී ආර් කේ එක්දහස් එක' — ඕනෑම ආකෘතියක් බාරගන්න."
+    "\n• tracking_id parameter එකට 'TRK-XXXX' format (dash සමඟ) යවන්න."
+    "\n"
+    "\n📦 Result ලැබුණු පසු:"
+    "\n  'ස්තූතියි. අංකය [Number] ලෙස මම සටහන් කරගත්තා."
+    "\n   ඔබේ පාර්සලය මේ වන විට [package_location] හි පිහිටා තිබෙනවා."
+    "\n   තත්ත්වය: [status_sinhala]."
+    "\n   එය [estimated_delivery] වන විට ඔබට ලැබෙනු ඇත."
+    "\n   ලබන්නා: [receiver], [delivery_address]."
+    "\n   බර: කිලෝ [package_weight_kg], [package_type] පාර්සලයක්."
+    "\n   ගෙවීම: [payment_status]."
+    "\n   වෙනත් යමක් දැනගැනීමට අවශ්‍යද?'"
+    "\n"
+    "\n• Not Found: 'කණගාටුයි, එම අංකයට අදාළ පාර්සලයක් මට සොයාගැනීමට නොහැකි වුණා. කරුණාකර අංකය නැවත පරීක්ෂා කර කියන්න පුළුවන්ද?'"
+    "\n• not_answered_count >= 2: 'මෙම පාර්සලය බෙදාහැරීමේදී පාරිභෝගිකයා හමු නොවූ අවස්ථා [X] වතාවක් වාර්තා වී ඇත.' කියන්න."
+    "\n\n═══ පාර්සලයක් යැවීම / Shipping Rate ═══"
+    "\n• පරිශීලකයා: 'මට පාර්සලයක් යවන්න ඕනේ'"
+    "\n• ඔබ: 'පැහැදිලියි. පාර්සලය ලබා ගැනීමට කුරියර් කෙනෙක් එවිය යුත්තේ කුමන ප්‍රදේශයටද?'"
+    "\n• ඉන්පසු: 'ඔබ පාර්සලය යවන්නේ කුමන නගරයටද?' සහ 'පාර්සලයේ බර කීයද?'"
+    "\n• calculate_shipping_rate tool call කරන්න."
+    "\n• පළමු 1kg = රු.400 + අතිරේක kg එකකට රු.100. දුරස්ථ ප්‍රදේශ = +රු.150."
+    "\n• result: 'ඔබේ ප්‍රදේශයේ සිට [destination] දක්වා පාර්සලයක් යැවීමට ආසන්න වශයෙන් රුපියල් [amount] ක් වැය වේ.'"
+    "\n\n═══ බෙදාහැරීම නැවත සැලසුම් කිරීම ═══"
+    "\n• reschedule_delivery tool call කරන්න. අතීත දිනයකට බැහැ. උපරිම 30 දින."
+    "\n• සාර්ථක: 'ඔබේ [tracking_id] පාර්සලයේ බෙදාහැරීම [date] දිනට වෙනස් කළා.'"
+    "\n\n═══ ලියාපදිංචි වීම (Registration) ═══"
+    "\n• පරිශීලකයා ලියාපදිංචි වීම ගැන ඇසුවොත්:"
+    "\n  'Smart Postal සේවාවට ලියාපදිංචි වීම ඉතා පහසුයි. ඔබට අපේ වෙබ් අඩවියට ගොස් Register බොත්තම ඔබන්න."
+    "\n   ඔබේ සම්පූර්ණ නම, ඊමේල් ලිපිනය, දුරකථන අංකය, සහ මුරපදයක් ඇතුළත් කරන්න. ඉන්පසු Sign Up බොත්තම ඔබන්න."
+    "\n   ලියාපදිංචි වූ පසු Login පිටුවට ගොස් ඔබේ ඊමේල් සහ මුරපදය පාවිචිචි කර ඇතුල් වන්න."
+    "\n   ඔබට WhatsApp හරහා ලියාපදිංචි සබැඳිය ලබා ගැනීමට අවශ්‍ය නම්, ඔබේ දුරකථන අංකය මට කියන්න.'"
+    "\n\n═══ දෝෂ හැසිරවීම ═══"
+    "\n• නොතේරුණොත්: 'මට එය පැහැදිලිව ඇසුණේ නැහැ. කරුණාකර නැවත කියන්න පුළුවන්ද?'"
+    "\n• උදව් කළ නොහැකි නම්: 'මට මේ සඳහා ඔබට උදව් කිරීමට අපහසුයි. කරුණාකර රැඳී සිටින්න, මම ඔබව අපගේ පාරිභෝගික සේවා නිලධාරියෙකුට සම්බන්ධ කරන්නම්.'"
+    "\n\n═══ ඇමතුම අවසානය ═══"
+    "\n• 'ස්මාර්ට් තැපැල් සේවාව ඇමතීම ගැන ස්තූතියි. ඔබට සුබ දවසක්!'"
+    "\n\n═══ වැදගත් නීති ═══"
+    "\n• tracking result: වාක්‍ය 3-4. අනෙකුත්: වාක්‍ය 1-2."
+    "\n• සිංහලෙන් පමණක් — English mix එපා (නම්, ලිපින ඉංග්‍රීසියෙන් ok)."
+    "\n• දිනය: '2026 මාර්තු 11'. මුදල: 'රුපියල් 600'."
+    "\n• formal වචන (පූර්වභාග/අපරභාග) එපා — ස්වභාවිකව කතා කරන්න."
+    "\n• තොරතුරු තහවුරු කරන්න — අංකයක් ලැබුණු විට නැවත කියන්න."
 )
 
 REMOTE_CITY_SURCHARGE = {"jaffna", "trincomalee", "mullaitivu", "batticaloa"}
-BASE_RATE_LKR = 350
-KG_RATE_LKR = 50
-REMOTE_SURCHARGE_LKR = 100
+# Updated pricing: Rs. 400 first 1kg + Rs. 100 per additional kg
+FIRST_KG_RATE_LKR = 400
+ADDITIONAL_KG_RATE_LKR = 100
+REMOTE_SURCHARGE_LKR = 150
 DEFAULT_MIN_TRANSCRIPT_CHARS = 2
+
+# Sinhala status translations
+STATUS_SINHALA = {
+    "pending": "බලාපොරොත්තුවෙන්",
+    "received": "භාරගත්",
+    "in transit": "ප්‍රවාහනයේ",
+    "out for delivery": "බෙදාහැරීමට පිටත්ව ඇත",
+    "delivered": "බෙදාහරින ලදී",
+    "not_received": "භාරගෙන නැත",
+    "customer_not_answered": "පාරිභෝගිකයා ප්‍රතිචාර දැක්වූයේ නැත",
+    "return_requested": "ආපසු ඉල්ලීමක් ඇත",
+    "returned_to_sender": "යවන්නාට ආපසු යවන ලදී",
+}
+
+# Sinhala month names
+SINHALA_MONTHS = {
+    1: "ජනවාරි", 2: "පෙබරවාරි", 3: "මාර්තු", 4: "අප්‍රේල්",
+    5: "මැයි", 6: "ජූනි", 7: "ජූලි", 8: "අගෝස්තු",
+    9: "සැප්තැම්බර්", 10: "ඔක්තෝබර්", 11: "නොවැම්බර්", 12: "දෙසැම්බර්",
+}
+
+
+def _format_date_sinhala(dt) -> str:
+    """Format a datetime to Sinhala readable date like 'මාර්තු 11, 2026'."""
+    if not dt:
+        return "නොදනී"
+    if hasattr(dt, 'date'):
+        d = dt
+    else:
+        d = dt
+    month_name = SINHALA_MONTHS.get(d.month, str(d.month))
+    return f"{d.year} {month_name} {d.day}"
+
+
+def _translate_status(status: str) -> str:
+    """Translate English status to Sinhala."""
+    if not status:
+        return "නොදනී"
+    return STATUS_SINHALA.get(status.lower().strip(), status)
 
 # ── Module-level state ──
 _RESOLVED_MODEL_NAME: Optional[str] = None
@@ -178,21 +255,32 @@ def _get_tracking_from_db(tracking_id: str) -> Optional[Dict[str, Any]]:
             )
             if not shipment:
                 return None
+            # Build rich payload with Sinhala-friendly fields
+            status_en = shipment.status or "Unknown"
             payload: Dict[str, Any] = {
                 "tracking_id": shipment.tracking_number,
-                "status": shipment.status or "Unknown",
-                "receiver": shipment.receiver_name or "Unknown",
-                "delivery_address": shipment.delivery_address or "Unknown",
-                "last_update": (
-                    shipment.created_at.isoformat()
-                    if shipment.created_at
-                    else datetime.now(timezone.utc).isoformat()
+                "status": status_en,
+                "status_sinhala": _translate_status(status_en),
+                "sender_name": shipment.sender_name or "නොදනී",
+                "sender_phone": shipment.sender_phone or "නොදනී",
+                "receiver": shipment.receiver_name or "නොදනී",
+                "receiver_phone": shipment.receiver_phone or "නොදනී",
+                "pickup_address": shipment.pickup_address or "නොදනී",
+                "delivery_address": shipment.delivery_address or "නොදනී",
+                "package_weight_kg": shipment.package_weight,
+                "package_type": shipment.package_type or "Standard",
+                "description": shipment.description or "විස්තරයක් නැත",
+                "package_location": getattr(shipment, 'package_location', None) or "නොදනී",
+                "payment_status": getattr(shipment, 'payment_status', None) or "නොදනී",
+                "not_answered_count": getattr(shipment, 'not_answered_count', 0) or 0,
+                "created_date": _format_date_sinhala(shipment.created_at),
+                "last_update": _format_date_sinhala(
+                    getattr(shipment, 'updated_at', None) or shipment.created_at
                 ),
             }
             if shipment.estimated_delivery:
-                payload["estimated_delivery"] = shipment.estimated_delivery.strftime("%Y-%m-%d")
+                payload["estimated_delivery"] = _format_date_sinhala(shipment.estimated_delivery)
             if shipment.courier_id:
-                # Try to get courier name
                 from app.models.user import User
                 courier = db.query(User).filter(User.id == shipment.courier_id).first()
                 if courier:
@@ -223,13 +311,20 @@ def get_tracking_status(tracking_id: str) -> Dict[str, Any]:
 def calculate_shipping_rate(
     origin_city: str, destination_city: str, weight_kg: float
 ) -> Dict[str, Any]:
-    """Compute shipping cost based on origin/destination and weight rules."""
+    """Compute shipping cost: Rs. 400 for first 1kg + Rs. 100 per additional kg."""
     try:
         normalized_weight = max(float(weight_kg), 0.1)
     except (ValueError, TypeError):
         raise ValueError("weight_kg must be a numeric value")
 
-    base_cost = BASE_RATE_LKR + KG_RATE_LKR * normalized_weight
+    # First 1kg = Rs. 400, each additional kg = Rs. 100
+    if normalized_weight <= 1.0:
+        base_cost = FIRST_KG_RATE_LKR
+    else:
+        import math
+        additional_kgs = math.ceil(normalized_weight - 1.0)
+        base_cost = FIRST_KG_RATE_LKR + (ADDITIONAL_KG_RATE_LKR * additional_kgs)
+
     destination_key = destination_city.lower().strip()
     origin_key = origin_city.lower().strip()
     remote_fee = REMOTE_SURCHARGE_LKR if destination_key in REMOTE_CITY_SURCHARGE else 0
@@ -239,7 +334,10 @@ def calculate_shipping_rate(
         "origin_city": origin_city,
         "destination_city": destination_city,
         "weight_kg": normalized_weight,
+        "first_kg_charge": FIRST_KG_RATE_LKR,
+        "additional_kg_charge": ADDITIONAL_KG_RATE_LKR if normalized_weight > 1.0 else 0,
         "is_remote_destination": bool(remote_fee),
+        "remote_surcharge": remote_fee,
         "same_city_discount_applied": bool(same_city_discount),
         "total_lkr": total,
     }
