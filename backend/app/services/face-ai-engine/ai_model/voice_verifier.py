@@ -53,25 +53,25 @@ MAX_SEGMENTS = 10                 # Max segments to process per audio
 
 # ── Sigmoid score mapping parameters ────────────────────────────────────────
 # WavLM cosine similarity (cross-device, cross-codec):
-#   Same speaker:      typically 0.25–0.60
-#   Different speaker: typically -0.10–0.18
-#   Decision boundary: ~0.20 cosine similarity
-WAVLM_SIGMOID_STEEPNESS = 14
-WAVLM_SIGMOID_MIDPOINT = 0.20
-
-# ECAPA-TDNN cosine similarity:
-#   Same speaker:      typically 0.40–0.85
+#   Same speaker:      typically 0.35–0.60
 #   Different speaker: typically -0.10–0.25
 #   Decision boundary: ~0.30 cosine similarity
-ECAPA_SIGMOID_STEEPNESS = 12
-ECAPA_SIGMOID_MIDPOINT = 0.30
+WAVLM_SIGMOID_STEEPNESS = 16
+WAVLM_SIGMOID_MIDPOINT = 0.30
+
+# ECAPA-TDNN cosine similarity:
+#   Same speaker:      typically 0.45–0.85
+#   Different speaker: typically -0.10–0.30
+#   Decision boundary: ~0.38 cosine similarity
+ECAPA_SIGMOID_STEEPNESS = 14
+ECAPA_SIGMOID_MIDPOINT = 0.38
 
 # Ensemble weights (ECAPA gets more weight — better speaker discrimination)
 WAVLM_WEIGHT = 0.40
 ECAPA_WEIGHT = 0.60
 
 # Both models must produce a score above this for the ensemble to pass
-MODEL_AGREEMENT_THRESHOLD = 0.30
+MODEL_AGREEMENT_THRESHOLD = 0.35
 
 # Audio quality thresholds
 MIN_RMS_ENERGY = 0.005            # Reject very quiet audio
@@ -181,9 +181,6 @@ def extract_audio(video_path: str) -> Tuple[Optional[np.ndarray], float]:
         if max_val > 1e-5:
             audio = audio / max_val
 
-        # Pre-emphasis to boost high frequencies (better for speaker features)
-        audio = np.append(audio[0], audio[1:] - 0.97 * audio[:-1])
-
         duration = len(audio) / sr
         logger.info(f"Audio extracted: {duration:.2f}s, RMS={rms:.4f} "
                      f"from {os.path.basename(video_path)}")
@@ -249,9 +246,6 @@ def extract_audio_from_file(audio_path: str) -> Tuple[Optional[np.ndarray], floa
         max_val = np.max(np.abs(audio))
         if max_val > 1e-5:
             audio = audio / max_val
-
-        # Pre-emphasis
-        audio = np.append(audio[0], audio[1:] - 0.97 * audio[:-1])
 
         duration = len(audio) / sr
         logger.info(f"Audio from file: {duration:.2f}s, RMS={rms:.4f}")
@@ -667,9 +661,9 @@ def compare_voices(video1_path: str, video2_path: str) -> float:
                         batch_embs[0:1], batch_embs[1:2]
                     ).item()
                 )
-            wavlm_cos = max(wavlm_cos, batch_cos)
+            wavlm_cos = (wavlm_cos + batch_cos) / 2.0
             logger.info(f"WavLM cos_sim: segmented={float(np.dot(wavlm1, wavlm2)):.4f}, "
-                        f"batch={batch_cos:.4f}, final={wavlm_cos:.4f}")
+                        f"batch={batch_cos:.4f}, avg={wavlm_cos:.4f}")
         except Exception as e:
             logger.warning(f"WavLM batch comparison fallback: {e}")
 
@@ -799,7 +793,7 @@ def _compare_audio_arrays(audio1: np.ndarray, audio2: np.ndarray) -> float:
                         batch_embs[0:1], batch_embs[1:2]
                     ).item()
                 )
-            wavlm_cos = max(wavlm_cos, batch_cos)
+            wavlm_cos = (wavlm_cos + batch_cos) / 2.0
         except Exception as e:
             logger.warning(f"WavLM batch comparison fallback: {e}")
 

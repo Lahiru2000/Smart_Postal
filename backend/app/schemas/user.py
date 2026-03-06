@@ -15,6 +15,11 @@ class UserLogin(BaseModel):
     password: str
     role: UserRole  # Required: must match user's actual role
 
+class UserUpdate(BaseModel):
+    full_name: str | None = None
+    phone: str | None = None
+    password: str | None = None
+
 class UserResponse(UserBase):
     id: int
     class Config:

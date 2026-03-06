@@ -3,9 +3,9 @@ import { useParams } from 'react-router-dom';
 import {
   Video, VideoOff, Upload, CheckCircle, XCircle, Clock,
   Camera, StopCircle, RotateCcw, Send, Package, User, AlertTriangle,
-  ScanFace, Loader2, Mic, MicOff
+  ScanFace, Loader2, Mic, MicOff, Home, PackageX, CornerDownRight, Lock, Undo2
 } from 'lucide-react';
-import { getVerificationLinkPublic, submitVerificationVideo, submitVerificationScan, getVerificationResult } from '../services/api';
+import { getVerificationLinkPublic, submitVerificationVideo, submitVerificationScan, getVerificationResult, submitDeliveryPreference } from '../services/api';
 
 const VerificationCapture = () => {
   const { token } = useParams();
@@ -51,6 +51,13 @@ const VerificationCapture = () => {
   // AI Verification result
   const [aiResult, setAiResult] = useState(null);
   const resultPollRef = useRef(null);
+
+  // Delivery preference state (shown after successful verification)
+  const [showDeliveryOptions, setShowDeliveryOptions] = useState(false);
+  const [selectedPreference, setSelectedPreference] = useState(null);
+  const [deliveryMessage, setDeliveryMessage] = useState('');
+  const [preferenceSubmitting, setPreferenceSubmitting] = useState(false);
+  const [preferenceSubmitted, setPreferenceSubmitted] = useState(false);
 
   // Refs
   const videoRef = useRef(null);
@@ -510,6 +517,21 @@ const VerificationCapture = () => {
     return `${m}:${sec}`;
   };
 
+  // ── Delivery preference submission ──────────────────────
+  const handleDeliveryPreference = async (preference) => {
+    setSelectedPreference(preference);
+    setPreferenceSubmitting(true);
+    try {
+      await submitDeliveryPreference(token, preference, deliveryMessage);
+      setPreferenceSubmitted(true);
+    } catch (err) {
+      console.error('Failed to submit delivery preference:', err);
+      alert(err.response?.data?.detail || 'Failed to save preference. Please try again.');
+    } finally {
+      setPreferenceSubmitting(false);
+    }
+  };
+
   // ── Loading ────────────────────────────────────────────
   if (loading) {
     return (
@@ -537,48 +559,160 @@ const VerificationCapture = () => {
   if (mode === 'done') {
     return (
       <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-6 px-4">
-        {/* Submission confirmed */}
-        <div className="w-24 h-24 bg-green-500/10 rounded-full flex items-center justify-center">
-          <CheckCircle className="w-12 h-12 text-green-400" />
-        </div>
-        <h1 className="text-white text-2xl font-bold">Video Submitted!</h1>
-
-        {/* AI Result Section */}
+        {/* Still waiting for AI */}
         {!aiResult ? (
-          <div className="w-full max-w-sm space-y-3">
-            <div className="flex items-center justify-center gap-3 text-blue-400">
-              <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-              <span className="font-medium text-sm">AI is verifying your identity...</span>
+          <>
+            <div className="w-24 h-24 bg-green-500/10 rounded-full flex items-center justify-center">
+              <CheckCircle className="w-12 h-12 text-green-400" />
             </div>
-            <p className="text-gray-500 text-center text-xs">Comparing face and voice with your reference video. This may take a moment.</p>
-          </div>
-        ) : aiResult.verdict ? (
-          <div className="w-full max-w-sm space-y-4">
-            {/* Verdict Card */}
-            <div className={`rounded-2xl border p-5 ${
-              aiResult.ai_match ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'
-            }`}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  {aiResult.ai_match
-                    ? <CheckCircle className="w-6 h-6 text-green-400" />
-                    : <XCircle className="w-6 h-6 text-red-400" />
-                  }
-                  <span className={`text-lg font-bold ${aiResult.ai_match ? 'text-green-400' : 'text-red-400'}`}>
-                    {aiResult.verdict}
-                  </span>
+            <h1 className="text-white text-2xl font-bold">Video Submitted!</h1>
+            <div className="w-full max-w-sm space-y-3">
+              <div className="flex items-center justify-center gap-3 text-blue-400">
+                <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                <span className="font-medium text-sm">AI is verifying your identity...</span>
+              </div>
+              <p className="text-gray-500 text-center text-xs">Comparing face and voice with your reference video. This may take a moment.</p>
+            </div>
+          </>
+        ) : aiResult.ai_match ? (
+          /* ═══ VERIFICATION SUCCESS ═══ */
+          <>
+            {!preferenceSubmitted ? (
+              <div className="w-full max-w-md space-y-6">
+                {/* Success header */}
+                <div className="text-center">
+                  <div className="w-20 h-20 bg-green-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle className="w-10 h-10 text-green-400" />
+                  </div>
+                  <h1 className="text-white text-2xl font-bold mb-1">Identity Verified!</h1>
+                  <p className="text-gray-400 text-sm">Please choose how you'd like your package delivered</p>
                 </div>
-                <span className={`text-xs font-bold px-2 py-1 rounded-full ${
-                  aiResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
-                  aiResult.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
-                  'bg-red-500/20 text-red-400'
-                }`}>
-                  {aiResult.confidence}
-                </span>
+
+                {/* Score summary (compact) */}
+                <div className="bg-green-500/5 border border-green-500/20 rounded-xl p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-green-400 text-sm font-semibold">{aiResult.verdict}</span>
+                    <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                      aiResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                      aiResult.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
+                      'bg-red-500/20 text-red-400'
+                    }`}>{aiResult.confidence}</span>
+                  </div>
+                  <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                    {aiResult.face_available && <span>Face: <span className="text-white font-bold">{(aiResult.face_score * 100).toFixed(1)}%</span></span>}
+                    {aiResult.voice_available && <span>Voice: <span className="text-white font-bold">{(aiResult.voice_score * 100).toFixed(1)}%</span></span>}
+                    <span>Overall: <span className="text-white font-bold">{(aiResult.combined_score * 100).toFixed(1)}%</span></span>
+                  </div>
+                </div>
+
+                {/* Delivery Options */}
+                <div className="space-y-3">
+                  <h2 className="text-white font-bold text-lg">Delivery Options</h2>
+
+                  <button
+                    onClick={() => handleDeliveryPreference('deliver_to_neighbor')}
+                    disabled={preferenceSubmitting}
+                    className="w-full bg-[#1A1A1A] rounded-2xl border border-[#333333] hover:border-[#FFC000]/50 p-5 transition-all group disabled:opacity-50 text-left"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 bg-[#FFC000]/10 rounded-xl flex items-center justify-center border border-[#FFC000]/20 group-hover:bg-[#FFC000]/20 transition-colors flex-shrink-0">
+                        <Home className="w-6 h-6 text-[#FFC000]" />
+                      </div>
+                      <div>
+                        <h3 className="text-white font-bold">Deliver to Neighbor</h3>
+                        <p className="text-gray-500 text-sm">Leave the package with a trusted neighbor</p>
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => handleDeliveryPreference('place_in_locker')}
+                    disabled={preferenceSubmitting}
+                    className="w-full bg-[#1A1A1A] rounded-2xl border border-[#333333] hover:border-cyan-500/50 p-5 transition-all group disabled:opacity-50 text-left"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 bg-cyan-500/10 rounded-xl flex items-center justify-center border border-cyan-500/20 group-hover:bg-cyan-500/20 transition-colors flex-shrink-0">
+                        <Lock className="w-6 h-6 text-cyan-400" />
+                      </div>
+                      <div>
+                        <h3 className="text-white font-bold">Place in Locker</h3>
+                        <p className="text-gray-500 text-sm">Place the package in a secure parcel locker</p>
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => handleDeliveryPreference('return_order')}
+                    disabled={preferenceSubmitting}
+                    className="w-full bg-[#1A1A1A] rounded-2xl border border-[#333333] hover:border-orange-500/50 p-5 transition-all group disabled:opacity-50 text-left"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 bg-orange-500/10 rounded-xl flex items-center justify-center border border-orange-500/20 group-hover:bg-orange-500/20 transition-colors flex-shrink-0">
+                        <Undo2 className="w-6 h-6 text-orange-400" />
+                      </div>
+                      <div>
+                        <h3 className="text-white font-bold">Return Order</h3>
+                        <p className="text-gray-500 text-sm">Return the package to sender</p>
+                      </div>
+                    </div>
+                  </button>
+                </div>
+
+                {preferenceSubmitting && (
+                  <div className="flex items-center justify-center gap-2 text-[#FFC000]">
+                    <div className="w-4 h-4 border-2 border-[#FFC000] border-t-transparent rounded-full animate-spin" />
+                    <span className="text-sm font-medium">Saving your preference...</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Preference submitted confirmation */
+              <div className="w-full max-w-md text-center space-y-5">
+                <div className="w-20 h-20 bg-green-500/10 rounded-full flex items-center justify-center mx-auto">
+                  <CheckCircle className="w-10 h-10 text-green-400" />
+                </div>
+                <h1 className="text-white text-2xl font-bold">All Set!</h1>
+                <div className="bg-[#1A1A1A] border border-[#333333] rounded-2xl p-5 space-y-3">
+                  <p className="text-gray-400 text-sm">Your delivery preference has been saved:</p>
+                  <div className="flex items-center justify-center gap-3">
+                    {selectedPreference === 'deliver_to_neighbor' && <Home className="w-6 h-6 text-[#FFC000]" />}
+                    {selectedPreference === 'place_in_locker' && <Lock className="w-6 h-6 text-cyan-400" />}
+                    {selectedPreference === 'return_order' && <Undo2 className="w-6 h-6 text-orange-400" />}
+                    <span className="text-white font-bold text-lg">
+                      {selectedPreference === 'deliver_to_neighbor' && 'Deliver to Neighbor'}
+                      {selectedPreference === 'place_in_locker' && 'Place in Locker'}
+                      {selectedPreference === 'return_order' && 'Return Order'}
+                    </span>
+                  </div>
+                  <p className="text-gray-500 text-xs">The courier has been notified of your choice.</p>
+                </div>
+                {linkInfo?.shipment_tracking && (
+                  <div className="flex items-center justify-center gap-2 text-gray-500 text-sm">
+                    <Package className="w-4 h-4" />
+                    Shipment: {linkInfo.shipment_tracking}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        ) : aiResult.verdict ? (
+          /* ═══ VERIFICATION FAILED — ORDER REVERSED ═══ */
+          <div className="w-full max-w-md text-center space-y-6">
+            <div className="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mx-auto">
+              <PackageX className="w-12 h-12 text-red-400" />
+            </div>
+            <h1 className="text-white text-2xl font-bold">Order Reversed</h1>
+
+            <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-center gap-2 text-red-400">
+                <XCircle className="w-5 h-5" />
+                <span className="font-bold">{aiResult.verdict}</span>
               </div>
 
-              <p className="text-gray-400 text-sm mb-3">
-                Overall Score: <span className="text-white font-bold">{(aiResult.combined_score * 100).toFixed(1)}%</span>
+              <p className="text-gray-400 text-sm leading-relaxed">
+                Identity verification did not match. For your security, this order has been 
+                <span className="text-red-400 font-bold"> automatically reversed</span>. 
+                No delivery will be attempted.
               </p>
 
               {/* Score Breakdown */}
@@ -614,25 +748,47 @@ const VerificationCapture = () => {
               </div>
             </div>
 
-            <p className="text-gray-500 text-center text-xs">
-              {aiResult.ai_match
-                ? 'Your identity has been verified. The courier has been notified.'
-                : 'Verification did not match. Please contact your courier for assistance.'
-              }
-            </p>
+            <div className="bg-[#1A1A1A] border border-[#333333] rounded-xl p-4 text-left space-y-2">
+              <p className="text-white font-semibold text-sm">What happens next?</p>
+              <ul className="text-gray-400 text-sm space-y-1.5">
+                <li className="flex items-start gap-2">
+                  <CornerDownRight className="w-4 h-4 text-gray-600 flex-shrink-0 mt-0.5" />
+                  The courier has been notified and will not deliver this package
+                </li>
+                <li className="flex items-start gap-2">
+                  <CornerDownRight className="w-4 h-4 text-gray-600 flex-shrink-0 mt-0.5" />
+                  The order is being returned to the sender
+                </li>
+                <li className="flex items-start gap-2">
+                  <CornerDownRight className="w-4 h-4 text-gray-600 flex-shrink-0 mt-0.5" />
+                  If you believe this is an error, please contact support
+                </li>
+              </ul>
+            </div>
+
+            {linkInfo?.shipment_tracking && (
+              <div className="flex items-center justify-center gap-2 text-gray-500 text-sm">
+                <Package className="w-4 h-4" />
+                Shipment: {linkInfo.shipment_tracking}
+              </div>
+            )}
           </div>
         ) : aiResult.ai_error ? (
-          <div className="w-full max-w-sm bg-red-500/10 border border-red-500/20 rounded-xl p-4">
-            <p className="text-red-400 text-sm">Verification encountered an error. The courier has been notified.</p>
+          <div className="w-full max-w-sm text-center space-y-4">
+            <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-10 h-10 text-red-400" />
+            </div>
+            <h1 className="text-white text-xl font-bold">Verification Error</h1>
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+              <p className="text-red-400 text-sm">Verification encountered an error. The courier has been notified.</p>
+            </div>
           </div>
         ) : (
-          <p className="text-gray-400 text-center max-w-sm">Your verification video has been sent to the courier.</p>
-        )}
-
-        {linkInfo?.shipment_tracking && (
-          <div className="flex items-center gap-2 text-gray-500 text-sm mt-2">
-            <Package className="w-4 h-4" />
-            Shipment: {linkInfo.shipment_tracking}
+          <div className="text-center space-y-4">
+            <div className="w-20 h-20 bg-green-500/10 rounded-full flex items-center justify-center mx-auto">
+              <CheckCircle className="w-10 h-10 text-green-400" />
+            </div>
+            <p className="text-gray-400 text-center max-w-sm">Your verification video has been sent to the courier.</p>
           </div>
         )}
       </div>
@@ -913,50 +1069,124 @@ const VerificationCapture = () => {
             {/* Scan Result */}
             {scanResult && (
               <div className="space-y-4">
-                {scanResult.success ? (
-                  <div className={`rounded-2xl border p-5 ${
-                    scanResult.ai_match ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'
-                  }`}>
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        {scanResult.ai_match
-                          ? <CheckCircle className="w-6 h-6 text-green-400" />
-                          : <XCircle className="w-6 h-6 text-red-400" />
-                        }
-                        <span className={`text-lg font-bold ${scanResult.ai_match ? 'text-green-400' : 'text-red-400'}`}>
-                          {scanResult.verdict}
-                        </span>
+                {scanResult.success && scanResult.ai_match ? (
+                  /* ═══ SCAN SUCCESS — Delivery Options ═══ */
+                  !preferenceSubmitted ? (
+                    <div className="space-y-4">
+                      {/* Compact success banner */}
+                      <div className="bg-green-500/10 border border-green-500/30 rounded-2xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle className="w-5 h-5 text-green-400" />
+                            <span className="text-green-400 font-bold">{scanResult.verdict}</span>
+                          </div>
+                          <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                            scanResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                            scanResult.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-red-500/20 text-red-400'
+                          }`}>{scanResult.confidence}</span>
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-gray-500">
+                          <span>Face: <span className="text-white font-bold">{scanResult.face_score}%</span></span>
+                          {scanResult.voice_available && <span>Voice: <span className="text-white font-bold">{scanResult.voice_score}%</span></span>}
+                        </div>
                       </div>
-                      <span className={`text-xs font-bold px-2 py-1 rounded-full ${
-                        scanResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
-                        scanResult.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
-                        'bg-red-500/20 text-red-400'
-                      }`}>
-                        {scanResult.confidence}
-                      </span>
-                    </div>
 
-                    <p className="text-gray-400 text-sm mb-3">
-                      Face Score: <span className="text-white font-bold">{scanResult.face_score}%</span>
-                      {scanResult.voice_available && (
-                        <> · Voice Score: <span className="text-white font-bold">{scanResult.voice_score}%</span></>
+                      <h2 className="text-white font-bold text-lg">Choose Delivery Option</h2>
+
+                      <button onClick={() => handleDeliveryPreference('deliver_to_neighbor')} disabled={preferenceSubmitting}
+                        className="w-full bg-[#1A1A1A] rounded-2xl border border-[#333333] hover:border-[#FFC000]/50 p-4 transition-all group disabled:opacity-50 text-left">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-[#FFC000]/10 rounded-xl flex items-center justify-center flex-shrink-0">
+                            <Home className="w-5 h-5 text-[#FFC000]" />
+                          </div>
+                          <div>
+                            <h3 className="text-white font-bold text-sm">Deliver to Neighbor</h3>
+                            <p className="text-gray-500 text-xs">Leave with a trusted neighbor</p>
+                          </div>
+                        </div>
+                      </button>
+
+                      <button onClick={() => handleDeliveryPreference('place_in_locker')} disabled={preferenceSubmitting}
+                        className="w-full bg-[#1A1A1A] rounded-2xl border border-[#333333] hover:border-cyan-500/50 p-4 transition-all group disabled:opacity-50 text-left">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-cyan-500/10 rounded-xl flex items-center justify-center flex-shrink-0">
+                            <Lock className="w-5 h-5 text-cyan-400" />
+                          </div>
+                          <div>
+                            <h3 className="text-white font-bold text-sm">Place in Locker</h3>
+                            <p className="text-gray-500 text-xs">Place in a secure parcel locker</p>
+                          </div>
+                        </div>
+                      </button>
+
+                      <button onClick={() => handleDeliveryPreference('return_order')} disabled={preferenceSubmitting}
+                        className="w-full bg-[#1A1A1A] rounded-2xl border border-[#333333] hover:border-orange-500/50 p-4 transition-all group disabled:opacity-50 text-left">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-orange-500/10 rounded-xl flex items-center justify-center flex-shrink-0">
+                            <Undo2 className="w-5 h-5 text-orange-400" />
+                          </div>
+                          <div>
+                            <h3 className="text-white font-bold text-sm">Return Order</h3>
+                            <p className="text-gray-500 text-xs">Return the package to sender</p>
+                          </div>
+                        </div>
+                      </button>
+
+                      {preferenceSubmitting && (
+                        <div className="flex items-center justify-center gap-2 text-[#FFC000]">
+                          <div className="w-4 h-4 border-2 border-[#FFC000] border-t-transparent rounded-full animate-spin" />
+                          <span className="text-sm font-medium">Saving...</span>
+                        </div>
                       )}
-                    </p>
-
-                    <div className="w-full bg-[#333333] rounded-full h-2">
-                      <div className={`h-2 rounded-full transition-all duration-500 ${
-                        scanResult.ai_match ? 'bg-green-500' : 'bg-red-500'
-                      }`} style={{ width: `${Math.min(scanResult.face_score, 100)}%` }} />
                     </div>
-
-                    <p className="text-gray-500 text-xs mt-3">
-                      {scanResult.ai_match
-                        ? 'Your identity has been verified. The courier has been notified.'
-                        : 'Verification did not match. You can try again or use video recording.'
-                      }
-                    </p>
+                  ) : (
+                    /* Preference saved */
+                    <div className="text-center space-y-4">
+                      <div className="w-16 h-16 bg-green-500/10 rounded-full flex items-center justify-center mx-auto">
+                        <CheckCircle className="w-8 h-8 text-green-400" />
+                      </div>
+                      <h2 className="text-white text-xl font-bold">Preference Saved!</h2>
+                      <div className="bg-[#1A1A1A] border border-[#333333] rounded-xl p-4">
+                        <div className="flex items-center justify-center gap-2">
+                          {selectedPreference === 'deliver_to_neighbor' && <Home className="w-5 h-5 text-[#FFC000]" />}
+                          {selectedPreference === 'place_in_locker' && <Lock className="w-5 h-5 text-cyan-400" />}
+                          {selectedPreference === 'return_order' && <Undo2 className="w-5 h-5 text-orange-400" />}
+                          <span className="text-white font-bold">
+                            {selectedPreference === 'deliver_to_neighbor' && 'Deliver to Neighbor'}
+                            {selectedPreference === 'place_in_locker' && 'Place in Locker'}
+                            {selectedPreference === 'return_order' && 'Return Order'}
+                          </span>
+                        </div>
+                        <p className="text-gray-500 text-xs mt-2">The courier has been notified.</p>
+                      </div>
+                    </div>
+                  )
+                ) : scanResult.success && !scanResult.ai_match ? (
+                  /* ═══ SCAN FAILED — Order Reversed ═══ */
+                  <div className="space-y-4">
+                    <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-5 text-center space-y-3">
+                      <PackageX className="w-10 h-10 text-red-400 mx-auto" />
+                      <h2 className="text-white text-xl font-bold">Order Reversed</h2>
+                      <p className="text-gray-400 text-sm">
+                        Identity verification did not match. This order has been 
+                        <span className="text-red-400 font-bold"> automatically reversed</span>.
+                      </p>
+                      <div className="flex items-center justify-center gap-3 text-xs text-gray-500 pt-2">
+                        <span>Face: <span className="text-white font-bold">{scanResult.face_score}%</span></span>
+                        {scanResult.voice_available && <span>Voice: <span className="text-white font-bold">{scanResult.voice_score}%</span></span>}
+                      </div>
+                    </div>
+                    <div className="bg-[#1A1A1A] border border-[#333333] rounded-xl p-4 text-left space-y-1.5">
+                      <p className="text-white font-semibold text-sm">What happens next?</p>
+                      <ul className="text-gray-400 text-sm space-y-1">
+                        <li className="flex items-start gap-2"><CornerDownRight className="w-4 h-4 text-gray-600 flex-shrink-0 mt-0.5" />The courier will not deliver this package</li>
+                        <li className="flex items-start gap-2"><CornerDownRight className="w-4 h-4 text-gray-600 flex-shrink-0 mt-0.5" />The order is being returned to sender</li>
+                        <li className="flex items-start gap-2"><CornerDownRight className="w-4 h-4 text-gray-600 flex-shrink-0 mt-0.5" />Contact support if you believe this is an error</li>
+                      </ul>
+                    </div>
                   </div>
-                ) : (
+                ) : scanResult.success === false ? (
                   <div className="rounded-2xl border p-5 bg-yellow-500/10 border-yellow-500/30">
                     <div className="flex items-center gap-2 mb-2">
                       <AlertTriangle className="w-6 h-6 text-yellow-400" />
@@ -964,13 +1194,16 @@ const VerificationCapture = () => {
                     </div>
                     <p className="text-gray-400 text-sm">{scanResult.error}</p>
                   </div>
-                )}
+                ) : null}
 
-                <button onClick={handleRetake}
-                  className="w-full px-5 py-3 bg-[#1A1A1A] text-gray-400 border border-[#333333] font-bold rounded-xl hover:bg-[#252525] transition-colors flex items-center justify-center gap-2">
-                  <RotateCcw className="w-4 h-4" />
-                  Try Again
-                </button>
+                {/* Show Try Again for failures only, not for successful verifications */}
+                {(scanResult.success === false || (scanResult.success && !scanResult.ai_match)) && !preferenceSubmitted && (
+                  <button onClick={handleRetake}
+                    className="w-full px-5 py-3 bg-[#1A1A1A] text-gray-400 border border-[#333333] font-bold rounded-xl hover:bg-[#252525] transition-colors flex items-center justify-center gap-2">
+                    <RotateCcw className="w-4 h-4" />
+                    Try Again
+                  </button>
+                )}
               </div>
             )}
 

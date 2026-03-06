@@ -36,6 +36,10 @@ class VerificationLink(Base):
     voice_available = Column(Boolean, nullable=True)       # was audio usable?
     ai_error = Column(Text, nullable=True)                 # error message if AI failed
 
+    # ── Delivery preference (set by customer after successful verification) ──
+    delivery_preference = Column(String(30), nullable=True)  # deliver_to_neighbor | place_in_locker | return_order
+    delivery_message = Column(Text, nullable=True)           # optional note from customer
+
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)

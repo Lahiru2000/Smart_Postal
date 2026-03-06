@@ -36,6 +36,8 @@ class VerificationLinkResponse(BaseModel):
     face_available: Optional[bool] = None
     voice_available: Optional[bool] = None
     ai_error: Optional[str] = None
+    delivery_preference: Optional[str] = None
+    delivery_message: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -64,3 +66,5 @@ class VerificationResultResponse(BaseModel):
     voice_available: Optional[bool] = None
     ai_error: Optional[str] = None
     completed_at: Optional[datetime] = None
+    delivery_preference: Optional[str] = None  # deliver_to_neighbor | place_in_locker | return_order
+    delivery_message: Optional[str] = None

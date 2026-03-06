@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Package, Send, CheckCircle, Clock, MapPin, Search, Plus, ArrowUpRight, Truck, Box, Trash2 } from 'lucide-react';
+import { Package, Send, CheckCircle, Clock, MapPin, Search, Plus, ArrowUpRight, Truck, Box, Trash2, Filter, ChevronDown, X } from 'lucide-react';
 import { getShipments, deleteShipment, trackShipment } from '../services/api';
 
 
@@ -10,6 +10,8 @@ const CustomerDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [trackingInput, setTrackingInput] = useState('');
   const [trackError, setTrackError] = useState('');
+  const [activeFilter, setActiveFilter] = useState('all');
+  const [filterOpen, setFilterOpen] = useState(false);
 
   useEffect(() => {
     fetchShipments();
@@ -49,24 +51,36 @@ const CustomerDashboard = () => {
     }
   };
 
-  // Compute stats from real data
+  // Compute counts from real data
   const activeCount = shipments.filter(s => s.status === 'Pending' || s.status === 'In Transit').length;
   const deliveredCount = shipments.filter(s => s.status === 'Delivered').length;
   const inTransitCount = shipments.filter(s => s.status === 'In Transit').length;
+  const pendingCount = shipments.filter(s => s.status === 'Pending').length;
   const totalCount = shipments.length;
 
-  const stats = [
-    { label: 'Active Shipments', value: String(activeCount), icon: <Send className="w-6 h-6" />, bg: 'bg-[#FFC000]', text: 'text-black' },
-    { label: 'Delivered', value: String(deliveredCount), icon: <CheckCircle className="w-6 h-6" />, bg: 'bg-green-500', text: 'text-black' },
-    { label: 'In Transit', value: String(inTransitCount), icon: <Truck className="w-6 h-6" />, bg: 'bg-blue-500', text: 'text-white' },
-    { label: 'Total Shipments', value: String(totalCount), icon: <Box className="w-6 h-6" />, bg: 'bg-gray-700', text: 'text-white' },
+  const filterOptions = [
+    { key: 'all', label: 'All Shipments', count: totalCount, icon: <Box className="w-4 h-4" />, color: 'text-gray-400', activeBg: 'bg-white/10', activeBorder: 'border-white/20' },
+    { key: 'active', label: 'Active', count: activeCount, icon: <Send className="w-4 h-4" />, color: 'text-[#FFC000]', activeBg: 'bg-[#FFC000]/10', activeBorder: 'border-[#FFC000]/30' },
+    { key: 'Pending', label: 'Pending', count: pendingCount, icon: <Clock className="w-4 h-4" />, color: 'text-[#FFC000]', activeBg: 'bg-[#FFC000]/10', activeBorder: 'border-[#FFC000]/30' },
+    { key: 'In Transit', label: 'In Transit', count: inTransitCount, icon: <Truck className="w-4 h-4" />, color: 'text-blue-400', activeBg: 'bg-blue-500/10', activeBorder: 'border-blue-500/30' },
+    { key: 'Delivered', label: 'Delivered', count: deliveredCount, icon: <CheckCircle className="w-4 h-4" />, color: 'text-green-400', activeBg: 'bg-green-500/10', activeBorder: 'border-green-500/30' },
   ];
+
+  const filteredShipments = shipments.filter((s) => {
+    if (activeFilter === 'all') return true;
+    if (activeFilter === 'active') return s.status === 'Pending' || s.status === 'In Transit';
+    return s.status === activeFilter;
+  });
+
+  const currentFilter = filterOptions.find(f => f.key === activeFilter) || filterOptions[0];
 
   const statusColor = (status) => {
     switch (status) {
       case 'In Transit': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
       case 'Delivered': return 'bg-green-500/10 text-green-400 border-green-500/20';
       case 'Pending': return 'bg-[#FFC000]/10 text-[#FFC000] border-[#FFC000]/20';
+      case 'Reversed': return 'bg-red-500/10 text-red-400 border-red-500/20';
+      case 'Return Requested': return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
       default: return 'bg-gray-800 text-gray-400 border-gray-700';
     }
   };
@@ -87,22 +101,83 @@ const CustomerDashboard = () => {
           </Link>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
-          {stats.map((stat, i) => (
-            <div key={i} className="group bg-[#1A1A1A] rounded-2xl p-6 border border-[#333333] hover:border-[#FFC000]/50 transition-all duration-300">
-              <div className="flex items-center justify-between mb-4">
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${stat.bg} ${stat.text} shadow-lg group-hover:scale-110 transition-transform`}>
-                  {React.cloneElement(stat.icon, { strokeWidth: 2.5 })}
-                </div>
-                <div className="p-1.5 bg-black rounded-lg border border-[#333333] group-hover:border-[#FFC000]/30 transition-colors">
-                    <ArrowUpRight className="w-4 h-4 text-gray-400 group-hover:text-[#FFC000]" />
-                </div>
-              </div>
-              <p className="text-4xl font-bold text-white tracking-tight mb-1">{stat.value}</p>
-              <p className="text-sm text-gray-400 font-medium">{stat.label}</p>
+        {/* Filter Bar */}
+        <div className="mb-8">
+          {/* Desktop: Pill filters */}
+          <div className="hidden sm:flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 mr-2 text-gray-500">
+              <Filter className="w-4 h-4" />
+              <span className="text-sm font-semibold">Filter:</span>
             </div>
-          ))}
+            {filterOptions.map((opt) => (
+              <button
+                key={opt.key}
+                onClick={() => setActiveFilter(opt.key)}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-all duration-200 ${
+                  activeFilter === opt.key
+                    ? `${opt.activeBg} ${opt.color} ${opt.activeBorder} shadow-lg`
+                    : 'bg-[#1A1A1A] text-gray-400 border-[#333333] hover:border-[#555] hover:text-white'
+                }`}
+              >
+                {opt.icon}
+                {opt.label}
+                <span className={`ml-1 text-xs font-bold px-1.5 py-0.5 rounded-md ${
+                  activeFilter === opt.key ? 'bg-white/10' : 'bg-black/40'
+                }`}>
+                  {opt.count}
+                </span>
+              </button>
+            ))}
+            {activeFilter !== 'all' && (
+              <button
+                onClick={() => setActiveFilter('all')}
+                className="ml-1 p-2 rounded-lg text-gray-500 hover:text-white hover:bg-[#1A1A1A] transition-colors"
+                title="Clear filter"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Mobile: Dropdown */}
+          <div className="sm:hidden relative">
+            <button
+              onClick={() => setFilterOpen(!filterOpen)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-[#1A1A1A] border border-[#333333] rounded-xl text-sm font-semibold text-white"
+            >
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-[#FFC000]" />
+                <span>{currentFilter.label}</span>
+                <span className="text-xs font-bold px-1.5 py-0.5 rounded-md bg-white/10 text-gray-300">{currentFilter.count}</span>
+              </div>
+              <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${filterOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {filterOpen && (
+              <div className="absolute top-full left-0 right-0 mt-2 bg-[#1A1A1A] border border-[#333333] rounded-xl shadow-2xl z-30 overflow-hidden">
+                {filterOptions.map((opt) => (
+                  <button
+                    key={opt.key}
+                    onClick={() => { setActiveFilter(opt.key); setFilterOpen(false); }}
+                    className={`w-full flex items-center justify-between px-4 py-3 text-sm font-semibold transition-colors ${
+                      activeFilter === opt.key
+                        ? `${opt.activeBg} ${opt.color}`
+                        : 'text-gray-400 hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {opt.icon}
+                      {opt.label}
+                    </div>
+                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded-md ${
+                      activeFilter === opt.key ? 'bg-white/10' : 'bg-black/40'
+                    }`}>
+                      {opt.count}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Track Shipment */}
@@ -139,11 +214,19 @@ const CustomerDashboard = () => {
           </div>
           {loading ? (
             <div className="p-12 text-center text-gray-400">Loading shipments...</div>
-          ) : shipments.length === 0 ? (
-            <div className="p-12 text-center text-gray-400">No shipments yet. Create your first shipment!</div>
+          ) : filteredShipments.length === 0 ? (
+            <div className="p-12 text-center text-gray-500">
+              <Package className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p className="font-medium">{activeFilter === 'all' ? 'No shipments yet. Create your first shipment!' : `No ${currentFilter.label.toLowerCase()} shipments.`}</p>
+              {activeFilter !== 'all' && (
+                <button onClick={() => setActiveFilter('all')} className="mt-3 text-sm text-[#FFC000] hover:text-white font-semibold transition-colors">
+                  Clear filter
+                </button>
+              )}
+            </div>
           ) : (
           <div className="divide-y divide-[#333333]">
-            {shipments.map((shipment) => (
+            {filteredShipments.map((shipment) => (
               <div key={shipment.id} onClick={() => navigate(`/shipment/${shipment.id}`)} className="p-6 hover:bg-white/5 transition-colors group cursor-pointer">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-3">
                   <div className="flex items-center gap-4">

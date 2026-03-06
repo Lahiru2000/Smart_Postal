@@ -668,6 +668,16 @@ async def submit_verification_scan(
     vlink.voice_available = voice_available
     vlink.ai_error = None
     vlink.completed_at = datetime.utcnow()
+
+    # Auto-reverse shipment if verification FAILED
+    if not is_match:
+        if shipment and shipment.status not in ("Reversed", "Delivered"):
+            shipment.status = "Reversed"
+            logger.info(
+                f"Shipment {shipment.id} ({shipment.tracking_number}) "
+                f"auto-reversed due to failed scan verification"
+            )
+
     db.commit()
 
     return {
@@ -718,4 +728,70 @@ def get_verification_result(
         voice_available=vlink.voice_available,
         ai_error=vlink.ai_error,
         completed_at=vlink.completed_at,
+        delivery_preference=vlink.delivery_preference,
+        delivery_message=vlink.delivery_message,
     )
+
+
+# ── Delivery Preference (public – token-based) ───────────────────────
+
+
+class DeliveryPreferenceRequest(BaseModel):
+    preference: str  # deliver_to_neighbor | place_in_locker | return_order
+    message: str = ""  # optional note
+
+
+@router.post("/public/{token}/delivery-preference")
+def submit_delivery_preference(
+    token: str,
+    payload: DeliveryPreferenceRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Customer submits their delivery preference after SUCCESSFUL verification.
+    No auth required – the one-time token IS the auth.
+    """
+    valid_prefs = {"deliver_to_neighbor", "place_in_locker", "return_order"}
+    if payload.preference not in valid_prefs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid preference. Must be one of: {', '.join(valid_prefs)}"
+        )
+
+    vlink = db.query(VerificationLink).filter(VerificationLink.token == token).first()
+    if not vlink:
+        raise HTTPException(status_code=404, detail="Verification link not found")
+
+    if vlink.status != "verified" or not vlink.ai_match:
+        raise HTTPException(
+            status_code=400,
+            detail="Delivery preference can only be set after successful verification"
+        )
+
+    if vlink.delivery_preference:
+        raise HTTPException(
+            status_code=400,
+            detail="Delivery preference has already been submitted"
+        )
+
+    vlink.delivery_preference = payload.preference
+    vlink.delivery_message = payload.message or None
+
+    # If customer chose to return the order, update shipment status
+    if payload.preference == "return_order":
+        shipment = db.query(Shipment).filter(Shipment.id == vlink.shipment_id).first()
+        if shipment:
+            shipment.status = "Return Requested"
+
+    db.commit()
+
+    logger.info(
+        f"Delivery preference set for token {token}: "
+        f"{payload.preference} (message: {payload.message or 'none'})"
+    )
+
+    return {
+        "detail": "Delivery preference saved successfully",
+        "preference": payload.preference,
+        "message": payload.message,
+    }

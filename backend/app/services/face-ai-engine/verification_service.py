@@ -125,6 +125,24 @@ def run_ai_verification(
             f"combined={result['combined_score']:.4f}"
         )
 
+        # ── Auto-reverse shipment if verification FAILED ──────────────────
+        if not result["match"]:
+            try:
+                from app.models.shipment import Shipment
+
+                shipment = db.query(Shipment).filter(
+                    Shipment.id == vlink.shipment_id
+                ).first()
+                if shipment and shipment.status not in ("Reversed", "Delivered"):
+                    shipment.status = "Reversed"
+                    db.commit()
+                    logger.info(
+                        f"Shipment {shipment.id} (TRK-{shipment.tracking_number}) "
+                        f"auto-reversed due to failed identity verification"
+                    )
+            except Exception as rev_err:
+                logger.error(f"Failed to auto-reverse shipment: {rev_err}")
+
     except Exception as e:
         logger.error(f"AI verification failed (link {verification_link_id}): {e}", exc_info=True)
         try:

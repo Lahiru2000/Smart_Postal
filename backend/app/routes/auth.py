@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
-from app.schemas.user import UserCreate, UserLogin, UserResponse
+from app.schemas.user import UserCreate, UserLogin, UserResponse, UserUpdate
 from app.services import auth
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -55,4 +55,21 @@ def login(user_credentials: UserLogin, db: Session = Depends(get_db)):
 def get_profile(
     current_user: User = Depends(auth.get_current_user),
 ):
+    return current_user
+
+
+@router.put("/profile", response_model=UserResponse)
+def update_profile(
+    update_data: UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.get_current_user),
+):
+    if update_data.full_name is not None:
+        current_user.full_name = update_data.full_name
+    if update_data.phone is not None:
+        current_user.phone = update_data.phone
+    if update_data.password is not None and update_data.password.strip():
+        current_user.hashed_password = auth.get_password_hash(update_data.password)
+    db.commit()
+    db.refresh(current_user)
     return current_user

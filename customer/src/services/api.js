@@ -21,6 +21,8 @@ api.interceptors.request.use((config) => {
 // Auth APIs
 export const registerUser = (data) => api.post('/auth/register', data);
 export const loginUser = (data) => api.post('/auth/login', data);
+export const getProfile = () => api.get('/auth/profile');
+export const updateProfile = (data) => api.put('/auth/profile', data);
 
 // Shipment APIs
 export const createShipment = (data) => api.post('/shipments/', data);
@@ -101,6 +103,8 @@ export const submitVerificationScan = (token, snapshots, audioBlob = null) => {
   });
 };
 export const getVerificationResult = (token) => api.get(`/verification-link/result/${token}`);
+export const submitDeliveryPreference = (token, preference, message = '') =>
+  api.post(`/verification-link/public/${token}/delivery-preference`, { preference, message });
 
 // Customer – check for pending verification link on a shipment
 export const getCustomerVerificationLink = (shipmentId) =>

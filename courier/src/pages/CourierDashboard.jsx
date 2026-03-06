@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Package, Truck, CheckCircle, Clock, Zap, Calendar, Shield, Send, X, Copy, RefreshCw, ExternalLink, CheckCheck, Navigation } from 'lucide-react';
+import { Package, Truck, CheckCircle, Clock, Zap, Calendar, Shield, Send, X, Copy, RefreshCw, ExternalLink, CheckCheck, Navigation, Filter, ChevronDown } from 'lucide-react';
 import { getShipments, updateShipment, startVoiceVerification, getVerificationStatus } from '../services/api';
 
 const CourierDashboard = () => {
@@ -8,6 +8,8 @@ const CourierDashboard = () => {
   const [shipments, setShipments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [verificationLoading, setVerificationLoading] = useState({});
+  const [activeFilter, setActiveFilter] = useState('all');
+  const [filterOpen, setFilterOpen] = useState(false);
 
   // Verification modal state
   const [verifyModal, setVerifyModal] = useState(null); // { shipmentId, verificationId, link, challengePhrase, status, expiresAt }
@@ -122,21 +124,32 @@ const CourierDashboard = () => {
     }
   };
 
-  // ── Stats ─────────────────────────────────────────────────
+  // ── Counts ─────────────────────────────────────────────────
   const activeCount = shipments.filter(s => s.status === 'In Transit' && s.courier_id).length;
   const deliveredCount = shipments.filter(s => s.status === 'Delivered').length;
   const pendingCount = shipments.filter(s => s.status === 'Pending').length;
+  const totalCount = shipments.length;
 
-  const stats = [
-    { label: 'Active Deliveries', value: String(activeCount), icon: <Truck className="w-6 h-6" strokeWidth={2.5} />, bg: 'bg-[#FFC000]' },
-    { label: 'Completed', value: String(deliveredCount), icon: <CheckCircle className="w-6 h-6" strokeWidth={2.5} />, bg: 'bg-green-500' },
-    { label: 'Pending Pickup', value: String(pendingCount), icon: <Clock className="w-6 h-6" strokeWidth={2.5} />, bg: 'bg-orange-500' },
+  const filterOptions = [
+    { key: 'all', label: 'All', count: totalCount, icon: <Package className="w-4 h-4" />, color: 'text-gray-400', activeBg: 'bg-white/10', activeBorder: 'border-white/20' },
+    { key: 'In Transit', label: 'Active Deliveries', count: activeCount, icon: <Truck className="w-4 h-4" />, color: 'text-[#FFC000]', activeBg: 'bg-[#FFC000]/10', activeBorder: 'border-[#FFC000]/30' },
+    { key: 'Delivered', label: 'Completed', count: deliveredCount, icon: <CheckCircle className="w-4 h-4" />, color: 'text-green-400', activeBg: 'bg-green-500/10', activeBorder: 'border-green-500/30' },
+    { key: 'Pending', label: 'Pending Pickup', count: pendingCount, icon: <Clock className="w-4 h-4" />, color: 'text-orange-400', activeBg: 'bg-orange-500/10', activeBorder: 'border-orange-500/30' },
   ];
+
+  const filteredShipments = shipments.filter((s) => {
+    if (activeFilter === 'all') return true;
+    return s.status === activeFilter;
+  });
+
+  const currentFilter = filterOptions.find(f => f.key === activeFilter) || filterOptions[0];
 
   const statusStyles = {
     'In Transit': 'bg-blue-500/10 text-blue-400 border-blue-500/20',
     'Delivered': 'bg-green-500/10 text-green-400 border-green-500/20',
     'Pending': 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+    'Reversed': 'bg-red-500/10 text-red-400 border-red-500/20',
+    'Return Requested': 'bg-purple-500/10 text-purple-400 border-purple-500/20',
   };
 
   const verificationStatusConfig = {
@@ -160,40 +173,118 @@ const CourierDashboard = () => {
             </div>
             <p className="text-gray-400 font-medium">Overview for {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
           </div>
-          <button className="px-5 py-2.5 bg-[#1A1A1A] hover:bg-[#252525] text-white border border-[#333333] rounded-xl font-bold text-sm transition-all flex items-center gap-2">
-             <Calendar className="w-4 h-4 text-[#FFC000]" />
-             View Schedule
-          </button>
+          <div className="flex items-center gap-3">
+            <Link to="/route-optimizer" className="px-5 py-2.5 bg-[#1A1A1A] hover:bg-[#252525] text-white border border-[#333333] rounded-xl font-bold text-sm transition-all flex items-center gap-2">
+               <Navigation className="w-4 h-4 text-[#FFC000]" />
+               Route Optimizer
+            </Link>
+            <button className="px-5 py-2.5 bg-[#1A1A1A] hover:bg-[#252525] text-white border border-[#333333] rounded-xl font-bold text-sm transition-all flex items-center gap-2">
+               <Calendar className="w-4 h-4 text-[#FFC000]" />
+               View Schedule
+            </button>
+          </div>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
-          {stats.map((stat, i) => (
-            <div key={i} className="group bg-[#1A1A1A] rounded-2xl p-6 border border-[#333333] hover:border-[#FFC000] transition-all duration-300 shadow-xl">
-              <div className="flex items-start justify-between mb-4">
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${stat.bg} text-black shadow-lg group-hover:scale-110 transition-transform`}>
-                  {stat.icon}
-                </div>
-              </div>
-              <p className="text-3xl font-bold text-white mb-1 tracking-tight">{stat.value}</p>
-              <p className="text-sm text-gray-500 font-medium">{stat.label}</p>
+        {/* Filter Bar */}
+        <div className="mb-8">
+          {/* Desktop: Pill filters */}
+          <div className="hidden sm:flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 mr-2 text-gray-500">
+              <Filter className="w-4 h-4" />
+              <span className="text-sm font-semibold">Filter:</span>
             </div>
-          ))}
+            {filterOptions.map((opt) => (
+              <button
+                key={opt.key}
+                onClick={() => setActiveFilter(opt.key)}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-all duration-200 ${
+                  activeFilter === opt.key
+                    ? `${opt.activeBg} ${opt.color} ${opt.activeBorder} shadow-lg`
+                    : 'bg-[#1A1A1A] text-gray-400 border-[#333333] hover:border-[#555] hover:text-white'
+                }`}
+              >
+                {opt.icon}
+                {opt.label}
+                <span className={`ml-1 text-xs font-bold px-1.5 py-0.5 rounded-md ${
+                  activeFilter === opt.key ? 'bg-white/10' : 'bg-black/40'
+                }`}>
+                  {opt.count}
+                </span>
+              </button>
+            ))}
+            {activeFilter !== 'all' && (
+              <button
+                onClick={() => setActiveFilter('all')}
+                className="ml-1 p-2 rounded-lg text-gray-500 hover:text-white hover:bg-[#1A1A1A] transition-colors"
+                title="Clear filter"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Mobile: Dropdown */}
+          <div className="sm:hidden relative">
+            <button
+              onClick={() => setFilterOpen(!filterOpen)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-[#1A1A1A] border border-[#333333] rounded-xl text-sm font-semibold text-white"
+            >
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-[#FFC000]" />
+                <span>{currentFilter.label}</span>
+                <span className="text-xs font-bold px-1.5 py-0.5 rounded-md bg-white/10 text-gray-300">{currentFilter.count}</span>
+              </div>
+              <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${filterOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {filterOpen && (
+              <div className="absolute top-full left-0 right-0 mt-2 bg-[#1A1A1A] border border-[#333333] rounded-xl shadow-2xl z-30 overflow-hidden">
+                {filterOptions.map((opt) => (
+                  <button
+                    key={opt.key}
+                    onClick={() => { setActiveFilter(opt.key); setFilterOpen(false); }}
+                    className={`w-full flex items-center justify-between px-4 py-3 text-sm font-semibold transition-colors ${
+                      activeFilter === opt.key
+                        ? `${opt.activeBg} ${opt.color}`
+                        : 'text-gray-400 hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {opt.icon}
+                      {opt.label}
+                    </div>
+                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded-md ${
+                      activeFilter === opt.key ? 'bg-white/10' : 'bg-black/40'
+                    }`}>
+                      {opt.count}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="grid lg:grid-cols-3 gap-8">
+        <div>
           {/* Shipments List */}
-          <div className="lg:col-span-2 bg-[#1A1A1A] rounded-2xl border border-[#333333] overflow-hidden">
+          <div className="bg-[#1A1A1A] rounded-2xl border border-[#333333] overflow-hidden">
             <div className="p-6 border-b border-[#333333] flex justify-between items-center">
               <h2 className="text-lg font-bold text-white">Shipments</h2>
             </div>
             {loading ? (
               <div className="p-12 text-center text-gray-400">Loading shipments...</div>
-            ) : shipments.length === 0 ? (
-              <div className="p-12 text-center text-gray-400">No shipments available.</div>
+            ) : filteredShipments.length === 0 ? (
+              <div className="p-12 text-center text-gray-500">
+                <Package className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                <p className="font-medium">{activeFilter === 'all' ? 'No shipments available.' : `No ${currentFilter.label.toLowerCase()} shipments.`}</p>
+                {activeFilter !== 'all' && (
+                  <button onClick={() => setActiveFilter('all')} className="mt-3 text-sm text-[#FFC000] hover:text-white font-semibold transition-colors">
+                    Clear filter
+                  </button>
+                )}
+              </div>
             ) : (
             <div className="divide-y divide-[#333333]">
-              {shipments.map((delivery) => (
+              {filteredShipments.map((delivery) => (
                 <div key={delivery.id} onClick={() => navigate(`/shipment/${delivery.id}`)} className="p-5 hover:bg-white/5 transition-colors cursor-pointer">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">
@@ -281,50 +372,7 @@ const CourierDashboard = () => {
             )}
           </div>
 
-          {/* Sidebar */}
-          <div className="space-y-6">
-            <div className="bg-[#FFC000] rounded-2xl p-6 text-black shadow-lg shadow-[#FFC000]/10">
-              <h3 className="font-bold text-xl mb-1">Driver Status</h3>
-              <p className="text-black/70 font-medium mb-6 text-sm">You are currently online and visible.</p>
-              <div className="space-y-3">
-                <button className="w-full py-3 bg-black text-white rounded-xl font-bold text-sm hover:bg-gray-900 transition-colors shadow-lg">
-                    Go Offline
-                </button>
-                <button className="w-full py-3 bg-black/10 text-black rounded-xl font-bold text-sm hover:bg-black/20 transition-colors">
-                    Vehicle Settings
-                </button>
-                <Link to="/route-optimizer" className="w-full py-3 bg-black text-[#FFC000] rounded-xl font-bold text-sm hover:bg-gray-900 transition-colors shadow-lg flex items-center justify-center gap-2">
-                    <Navigation className="w-4 h-4" />
-                    Route Optimizer
-                </Link>
-              </div>
-            </div>
 
-            <div className="bg-[#1A1A1A] rounded-2xl p-6 border border-[#333333]">
-                 <h3 className="font-bold text-white mb-4">Performance Score</h3>
-                 <div className="flex items-center gap-4">
-                    <div className="flex-1">
-                        <div className="flex justify-between text-sm mb-2">
-                            <span className="text-gray-400">Rating</span>
-                            <span className="text-[#FFC000] font-bold">4.8/5.0</span>
-                        </div>
-                        <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                            <div className="h-full bg-[#FFC000] w-[96%]"></div>
-                        </div>
-                    </div>
-                 </div>
-                 <div className="mt-6 pt-6 border-t border-[#333333] grid grid-cols-2 gap-4 text-center">
-                    <div>
-                        <p className="text-2xl font-bold text-white">98%</p>
-                        <p className="text-xs text-gray-500 uppercase tracking-wide mt-1">Acceptance</p>
-                    </div>
-                    <div>
-                        <p className="text-2xl font-bold text-white">12m</p>
-                        <p className="text-xs text-gray-500 uppercase tracking-wide mt-1">Avg Time</p>
-                    </div>
-                 </div>
-            </div>
-          </div>
         </div>
       </div>
 
