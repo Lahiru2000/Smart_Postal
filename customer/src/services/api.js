@@ -86,4 +86,16 @@ export const submitVerificationVideo = (token, videoFile) => {
 export const getCustomerVerificationLink = (shipmentId) =>
   api.get(`/verification-link/customer/shipment/${shipmentId}`);
 
+// Sinhala Voice Assistant APIs
+export const getAssistantTracking = (trackingId) => api.get(`/assistant/tracking/${trackingId}`);
+export const postAssistantTextQuery = (text) => api.post('/assistant/query/text', { text });
+export const postAssistantVoiceQuery = (audioFile) => {
+  const formData = new FormData();
+  formData.append('file', audioFile);
+  return api.post('/assistant/query/voice', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+export const resetAssistantConversation = () => api.post('/assistant/reset-conversation');
+
 export default api;

@@ -28,6 +28,7 @@ class Shipment(Base):
     description = Column(Text, nullable=True)
     
     status = Column(String(50), default="Pending")
+    estimated_delivery = Column(DateTime, nullable=True)   # Expected delivery date (used by voice assistant reschedule)
     image_url = Column(String(500), nullable=True)   # Verification image path
     video_url = Column(String(500), nullable=True)   # Verification video path
     media_type = Column(String(20), nullable=True)   # 'image' | 'video' | None

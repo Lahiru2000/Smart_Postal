@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.database import engine, Base
-from app.routes import auth, shipments, voice_auth
+from app.routes import auth, shipments, voice_auth, assistant
 # Import models to register them with SQLAlchemy Base
 from app.models import user, shipment
 from app.models import voice_auth as voice_auth_models
@@ -70,6 +70,7 @@ app.include_router(shipments.router)
 app.include_router(voice_auth.router)
 app.include_router(video_call_routes.router)
 app.include_router(verification_link_routes.router)
+app.include_router(assistant.router)
 
 # Serve uploaded verification videos as static files
 _uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", "verifications")

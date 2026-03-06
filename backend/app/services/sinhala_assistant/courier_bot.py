@@ -1,0 +1,517 @@
+"""CourierBot: Sinhala voice assistant for Smart Postal courier service.
+
+Adapted for the group project setup:
+- Uses SQLAlchemy ORM (app.models.shipment.Shipment) instead of mock_db.json
+- Falls back to mock_db.json when the database is unavailable
+- Uses the group project's database.py / get_db() for DB sessions
+- Tracking ID format: TRK-XXXXXXXX (group) + legacy TRK001 (mock)
+"""
+from __future__ import annotations
+
+import io
+import logging
+import os
+import time
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import google.genai
+from google.genai import types as genai_types
+from dotenv import load_dotenv
+
+try:  # pragma: no cover
+    from openai import OpenAI
+except ImportError:  # pragma: no cover
+    OpenAI = None
+
+try:  # pragma: no cover
+    import whisper
+except ImportError:  # pragma: no cover
+    whisper = None
+
+try:  # pragma: no cover
+    import speech_recognition as sr
+except ImportError:  # pragma: no cover
+    sr = None
+
+try:  # pragma: no cover
+    from gtts import gTTS
+except ImportError:  # pragma: no cover
+    gTTS = None
+
+
+# ── Paths ──
+SERVICE_DIR = Path(__file__).resolve().parent
+
+# ── System prompt ──
+SYSTEM_PROMPT = (
+    "ඔබ Smart Postal හි මිත්‍රශීලී හඬ සහායකයෙකි. "
+    "මිනිසුන් සමඟ ස්වභාවිකව, මිත්‍රශීලීව, සහ කාරුණිකව කතා කරන්න. "
+    "\n\nසංවාද ගලායාම (Conversational Flow):"
+    "\n- යමෙක් 'ආයුබෝවන්', 'කොහොමද' වැනි සුබපැතුම් කළහොත්, මිත්‍රශීලීව සුබපතා 'මම ඔබට කොහොමද උදව් කරන්නේ?' යැයි අසන්න."
+    "\n- කිසිවිටෙකත් සුබපැතුමකට 'Tracking ID එක දෙන්න' කියා බලහත්කාරයෙන් අසන්න එපා."
+    "\n- පාරිභෝගිකයාගේ කතාව අසාගෙන, ඔවුන්ට අවශ්‍ය දේ පමණක් අසන්න."
+    "\n\nනිරීක්ෂණ අංක හැසිරවීම:"
+    "\n- පරිශීලකයා සිංහලෙන් අංක කීවොත් (උදා: 'බින්දුවයි තුන', 'එක') එය ඉලක්කම් වලට හරවාගෙන තේරුම් ගන්න."
+    "\n- TRK-XXXXXXXX, TRK001, TRK 001, TRK01, TRK 1 වැනි ආකෘති බාරගන්න"
+    "\n- පද්ධතිය ස්වයංක්‍රීයව normalize කරයි"
+    "\n- නිරීක්ෂණ අංකය හමු නොවුනොත් කියන්න: 'සමාවෙන්න, එම නිරීක්ෂණ අංකය පද්ධතියෙන් සොයාගන්න බැරි උනා. කරුණාකර නැවතත් පරීක්ෂා කරන්න පුළුවන්ද?'"
+    "\n- අංකයක් ලබා දුන් වහාම get_tracking_status ශ්‍රිතය අමතන්න."
+    "\n\nඉතා වැදගත් සම්බාධක (Latency Optimization):"
+    "\n- සෑමවිටම වාක්‍ය 1-2 කින් පමණක් පිළිතුරු දෙන්න."
+    "\n- සිංහලෙන් පමණක් කතා කරන්න."
+)
+
+REMOTE_CITY_SURCHARGE = {"jaffna", "trincomalee", "mullaitivu", "batticaloa"}
+BASE_RATE_LKR = 350
+KG_RATE_LKR = 50
+REMOTE_SURCHARGE_LKR = 100
+DEFAULT_MIN_TRANSCRIPT_CHARS = 2
+
+# ── Module-level state ──
+_RESOLVED_MODEL_NAME: Optional[str] = None
+_LAST_GEN_CALL_TS = 0.0
+_GENAI_CLIENT: Optional[google.genai.Client] = None
+OPENAI_CLIENT: Optional["OpenAI"] = None
+WHISPER_MODEL: Optional[Any] = None
+
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger("courierbot")
+
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+
+def load_env() -> None:
+    """Load environment variables and initialize the Genai client."""
+    global _GENAI_CLIENT
+    load_dotenv()
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        raise EnvironmentError(
+            "GEMINI_API_KEY is not set. Add it to your backend .env file."
+        )
+    _GENAI_CLIENT = google.genai.Client(api_key=gemini_key)
+
+
+# ---------------------------------------------------------------------------
+# Model resolution
+# ---------------------------------------------------------------------------
+
+def resolve_model_name() -> str:
+    """Pick Gemini model name from env or default."""
+    global _RESOLVED_MODEL_NAME
+    if _RESOLVED_MODEL_NAME:
+        return _RESOLVED_MODEL_NAME
+    _RESOLVED_MODEL_NAME = os.getenv("COURIERBOT_MODEL", "gemini-2.0-flash").strip()
+    logger.info("Using Gemini model %s", _RESOLVED_MODEL_NAME)
+    return _RESOLVED_MODEL_NAME
+
+
+# ---------------------------------------------------------------------------
+# Sinhala number mapping
+# ---------------------------------------------------------------------------
+
+SINHALA_NUMBERS = {
+    "බින්දුවයි": "0", "බිංදුවයි": "0", "බින්දුව": "0", "බිංදුව": "0",
+    "එක": "1", "එකයි": "1",
+    "දෙක": "2", "දෙකයි": "2",
+    "තුන": "3", "තුනයි": "3",
+    "හතර": "4", "හතරයි": "4",
+    "පහ": "5", "පහයි": "5",
+    "හය": "6", "හයයි": "6",
+    "හත": "7", "හතයි": "7",
+    "අට": "8", "අටයි": "8",
+    "නමය": "9", "නමයයි": "9", "නවය": "9", "නවයයි": "9",
+    "දහය": "10", "දහයයි": "10",
+}
+
+
+def _normalize_tracking_id(raw_id: str) -> str:
+    """Normalize a tracking ID, handling Sinhala numbers and various formats.
+
+    Always produces the canonical format TRK-XXXX (with dash).
+    Accepts: TRK-1001, TRK1001, TRK 1001, trk1001, Sinhala number words, etc.
+    """
+    cleaned = raw_id.lower()
+    for word, digit in SINHALA_NUMBERS.items():
+        cleaned = cleaned.replace(word, digit)
+
+    # Remove all spaces and dashes, uppercase
+    normalized = cleaned.upper().replace(" ", "").replace("-", "")
+
+    # Extract the numeric part after TRK
+    if normalized.startswith("TRK"):
+        num_part = normalized[3:]
+        # Always produce TRK-{digits} format
+        if num_part.isdigit():
+            return f"TRK-{num_part}"
+        # Alphanumeric part (e.g. TRK-A1B2C3D4) — keep with dash
+        return f"TRK-{num_part}"
+    elif normalized.isdigit():
+        return f"TRK-{normalized}"
+
+    # Fallback — return as-is uppercased
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Database-backed tracking lookup
+# ---------------------------------------------------------------------------
+
+def _get_tracking_from_db(tracking_id: str) -> Optional[Dict[str, Any]]:
+    """Query the real Shipment table via SQLAlchemy. Returns None on failure."""
+    try:
+        from app.database import SessionLocal
+        from app.models.user import User  # noqa: F401 - relationship resolution
+        from app.models.voice_auth import VoiceEnrollment, VoiceProfile, VoiceVerification  # noqa: F401
+        from app.models.shipment import Shipment
+
+        db = SessionLocal()
+        try:
+            shipment = (
+                db.query(Shipment)
+                .filter(Shipment.tracking_number == tracking_id)
+                .first()
+            )
+            if not shipment:
+                return None
+            payload: Dict[str, Any] = {
+                "tracking_id": shipment.tracking_number,
+                "status": shipment.status or "Unknown",
+                "receiver": shipment.receiver_name or "Unknown",
+                "delivery_address": shipment.delivery_address or "Unknown",
+                "last_update": (
+                    shipment.created_at.isoformat()
+                    if shipment.created_at
+                    else datetime.now(timezone.utc).isoformat()
+                ),
+            }
+            if shipment.estimated_delivery:
+                payload["estimated_delivery"] = shipment.estimated_delivery.strftime("%Y-%m-%d")
+            if shipment.courier_id:
+                # Try to get courier name
+                from app.models.user import User
+                courier = db.query(User).filter(User.id == shipment.courier_id).first()
+                if courier:
+                    payload["rider"] = courier.full_name
+            return payload
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("DB lookup failed for %s: %s. Falling back to mock.", tracking_id, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Tool functions exposed to Gemini
+# ---------------------------------------------------------------------------
+
+def get_tracking_status(tracking_id: str) -> Dict[str, Any]:
+    """Return parcel status for a given tracking ID from the database."""
+    normalized_id = _normalize_tracking_id(tracking_id)
+
+    db_result = _get_tracking_from_db(normalized_id)
+    if db_result is not None:
+        return db_result
+
+    return {"tracking_id": normalized_id, "status": "Not Found"}
+
+
+def calculate_shipping_rate(
+    origin_city: str, destination_city: str, weight_kg: float
+) -> Dict[str, Any]:
+    """Compute shipping cost based on origin/destination and weight rules."""
+    try:
+        normalized_weight = max(float(weight_kg), 0.1)
+    except (ValueError, TypeError):
+        raise ValueError("weight_kg must be a numeric value")
+
+    base_cost = BASE_RATE_LKR + KG_RATE_LKR * normalized_weight
+    destination_key = destination_city.lower().strip()
+    origin_key = origin_city.lower().strip()
+    remote_fee = REMOTE_SURCHARGE_LKR if destination_key in REMOTE_CITY_SURCHARGE else 0
+    same_city_discount = -50 if origin_key == destination_key else 0
+    total = round(base_cost + remote_fee + same_city_discount, 2)
+    return {
+        "origin_city": origin_city,
+        "destination_city": destination_city,
+        "weight_kg": normalized_weight,
+        "is_remote_destination": bool(remote_fee),
+        "same_city_discount_applied": bool(same_city_discount),
+        "total_lkr": total,
+    }
+
+
+def reschedule_delivery(tracking_id: str, new_date: str) -> Dict[str, Any]:
+    """Update the targeted delivery date for a tracking ID.
+
+    Validations:
+    - Date must be valid ISO format (YYYY-MM-DD)
+    - Date must not be in the past
+    - Date must not be more than 30 days in the future
+    - Already-delivered parcels cannot be rescheduled
+    """
+    normalized_id = _normalize_tracking_id(tracking_id)
+
+    # --- Date format validation ---
+    try:
+        parsed_date = datetime.fromisoformat(new_date).date()
+    except ValueError:
+        return {
+            "tracking_id": normalized_id,
+            "error": "දිනය වලංගු නැත. කරුණාකර YYYY-MM-DD ආකෘතියෙන් දිනය ලබාදෙන්න.",
+        }
+
+    today = datetime.now(timezone.utc).date()
+
+    if parsed_date < today:
+        return {
+            "tracking_id": normalized_id,
+            "error": f"අතීත දිනයකට ({parsed_date.isoformat()}) නැවත සැලසුම් කළ නොහැක. කරුණාකර අනාගත දිනයක් තෝරන්න.",
+        }
+
+    max_future = today + timedelta(days=30)
+    if parsed_date > max_future:
+        return {
+            "tracking_id": normalized_id,
+            "error": f"දින 30 කට වඩා ඉදිරි දිනයකට නැවත සැලසුම් කළ නොහැක. උපරිම දිනය: {max_future.isoformat()}",
+        }
+
+    # ── Try real database ──
+    try:
+        from app.database import SessionLocal
+        from app.models.user import User  # noqa: F401
+        from app.models.voice_auth import VoiceEnrollment, VoiceProfile, VoiceVerification  # noqa: F401
+        from app.models.shipment import Shipment as ShipmentModel
+
+        db_session = SessionLocal()
+        try:
+            shipment = (
+                db_session.query(ShipmentModel)
+                .filter(ShipmentModel.tracking_number == normalized_id)
+                .first()
+            )
+            if shipment:
+                if (shipment.status or "").lower() == "delivered":
+                    return {
+                        "tracking_id": normalized_id,
+                        "error": "මෙම පාර්සලය දැනටමත් බෙදා හැර ඇත. බෙදාහැරීම නැවත සැලසුම් කළ නොහැක.",
+                    }
+                parsed_date_str = parsed_date.isoformat()
+                shipment.estimated_delivery = datetime.fromisoformat(parsed_date_str)
+                db_session.commit()
+                return {
+                    "tracking_id": normalized_id,
+                    "status": shipment.status or "Unknown",
+                    "rescheduled_for": parsed_date_str,
+                }
+            else:
+                return {"tracking_id": normalized_id, "status": "Not Found"}
+        finally:
+            db_session.close()
+    except Exception as exc:
+        logger.error("DB reschedule failed for %s: %s", normalized_id, exc)
+        return {"tracking_id": normalized_id, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Gemini tools & model
+# ---------------------------------------------------------------------------
+
+def build_tools() -> List[genai_types.Tool]:
+    """Define Gemini function schemas for tool calling."""
+    get_status_fn = genai_types.FunctionDeclaration(
+        name="get_tracking_status",
+        description="Lookup a Smart Postal tracking ID and return its latest status",
+        parameters={
+            "type": "object",
+            "properties": {
+                "tracking_id": {
+                    "type": "string",
+                    "description": "Tracking number (e.g. TRK-1001)",
+                }
+            },
+            "required": ["tracking_id"],
+        },
+    )
+
+    calc_rate_fn = genai_types.FunctionDeclaration(
+        name="calculate_shipping_rate",
+        description="Calculate parcel shipping cost in LKR",
+        parameters={
+            "type": "object",
+            "properties": {
+                "origin_city": {"type": "string", "description": "Pickup city"},
+                "destination_city": {"type": "string", "description": "Drop-off city"},
+                "weight_kg": {"type": "number", "description": "Weight in kilograms"},
+            },
+            "required": ["origin_city", "destination_city", "weight_kg"],
+        },
+    )
+
+    reschedule_fn = genai_types.FunctionDeclaration(
+        name="reschedule_delivery",
+        description=(
+            "Update a delivery date for an existing tracking ID. "
+            "Date must be YYYY-MM-DD, not past, within 30 days, parcel not delivered."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "tracking_id": {"type": "string", "description": "Tracking number"},
+                "new_date": {
+                    "type": "string",
+                    "description": "Preferred delivery date (YYYY-MM-DD)",
+                },
+            },
+            "required": ["tracking_id", "new_date"],
+        },
+    )
+
+    return [genai_types.Tool(function_declarations=[get_status_fn, calc_rate_fn, reschedule_fn])]
+
+
+def initialize_model() -> Dict[str, Any]:
+    """Initialize Google Genai client, resolve model, and build tools.
+
+    Returns a dict with 'client', 'model_name', and 'tools' that callers use
+    to create chat sessions via create_chat_session().
+    """
+    load_env()
+    model_name = resolve_model_name()
+    tools = build_tools()
+    return {"client": _GENAI_CLIENT, "model_name": model_name, "tools": tools}
+
+
+def create_chat_session(init_data: Dict[str, Any], history=None) -> Any:
+    """Create a new chat session using the google-genai SDK."""
+    config = genai_types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        tools=init_data["tools"],
+        temperature=0.3,
+        max_output_tokens=50,
+        safety_settings=[
+            genai_types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+            genai_types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+            genai_types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
+            genai_types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
+        ],
+    )
+    kwargs = {"model": init_data["model_name"], "config": config}
+    if history:
+        kwargs["history"] = history
+    return init_data["client"].chats.create(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Chat helpers
+# ---------------------------------------------------------------------------
+
+def get_history_turn_limit() -> int:
+    try:
+        return max(int(os.getenv("COURIERBOT_HISTORY_TURNS", "8")), 1)
+    except ValueError:
+        return 8
+
+
+def get_request_cooldown() -> float:
+    try:
+        return max(float(os.getenv("COURIERBOT_REQUEST_COOLDOWN", "0.75")), 0.0)
+    except ValueError:
+        return 0.75
+
+
+FUNCTION_MAP: Dict[str, Callable[..., Dict[str, Any]]] = {
+    "get_tracking_status": get_tracking_status,
+    "calculate_shipping_rate": calculate_shipping_rate,
+    "reschedule_delivery": reschedule_delivery,
+}
+
+
+def enforce_request_cooldown() -> None:
+    cooldown = get_request_cooldown()
+    if cooldown <= 0:
+        return
+    global _LAST_GEN_CALL_TS
+    now = time.monotonic()
+    elapsed = now - _LAST_GEN_CALL_TS
+    if elapsed < cooldown:
+        time.sleep(cooldown - elapsed)
+    _LAST_GEN_CALL_TS = time.monotonic()
+
+
+def trim_chat_history(init_data: Dict[str, Any], chat: Any) -> Any:
+    history = getattr(chat, "history", None) or getattr(chat, "_history", [])
+    max_messages = get_history_turn_limit() * 2
+    if not history or len(history) <= max_messages:
+        return chat
+    trimmed_history = list(history[-max_messages:])
+    return create_chat_session(init_data, trimmed_history)
+
+
+def execute_function_call(function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    handler = FUNCTION_MAP.get(function_name)
+    if handler is None:
+        raise ValueError(f"Function {function_name} is not implemented")
+    return handler(**arguments)
+
+
+def extract_function_call(response: Any) -> Optional[tuple[str, Dict[str, Any]]]:
+    candidates = getattr(response, "candidates", [])
+    for candidate in candidates:
+        for part in candidate.content.parts:
+            fn_call = getattr(part, "function_call", None)
+            if fn_call:
+                args = dict(fn_call.args or {})
+                return fn_call.name, args
+    return None
+
+
+def handle_model_turn(init_data: Dict[str, Any], chat: Any, user_text: str) -> Tuple[str, Any]:
+    """Send user input to Gemini and resolve any tool calls."""
+    enforce_request_cooldown()
+    response = chat.send_message(user_text)
+
+    while True:
+        function_call = extract_function_call(response)
+        if not function_call:
+            break
+        fn_name, fn_args = function_call
+        logger.info("Gemini requested function %s with args %s", fn_name, fn_args)
+        try:
+            result = execute_function_call(fn_name, fn_args)
+        except Exception as exc:
+            result = {"error": str(exc)}
+        enforce_request_cooldown()
+        response = chat.send_message(
+            genai_types.Part.from_function_response(
+                name=fn_name,
+                response=result,
+            )
+        )
+
+    final_text = ""
+    candidates = getattr(response, "candidates", [])
+    if candidates:
+        candidate = candidates[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
+
+        if finish_reason == 2:  # SAFETY
+            final_text = "සමාවෙන්න, ඔබේ tracking ID එක නැවත කියන්න පුළුවන්ද?"
+        elif finish_reason == 3:  # RECITATION
+            final_text = "මට මේ පිළිතුර දීමට නොහැක. වෙනත් උදව්වක් අවශ්‍යද?"
+        elif hasattr(candidate.content, "parts") and candidate.content.parts:
+            for part in candidate.content.parts:
+                if hasattr(part, "text") and part.text:
+                    final_text += part.text
+        else:
+            final_text = "මට මොකක්ද කියලා තව පැහැදිලි කරන්න."
+    else:
+        final_text = "මට මොකක්ද කියලා තව පැහැදිලි කරන්න."
+
+    updated_chat = trim_chat_history(init_data, chat)
+    fallback = "මට මොකක්ද කියලා තව පැහැදිලි කරන්න."
+    return (final_text or fallback), updated_chat
