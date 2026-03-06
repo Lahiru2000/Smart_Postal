@@ -29,10 +29,13 @@ export const getShipmentById = (id) => api.get(`/shipments/${id}`);
 export const trackShipment = (trackingNumber) => api.get(`/shipments/track/${trackingNumber}`);
 export const updateShipment = (id, data) => api.put(`/shipments/${id}`, data);
 export const deleteShipment = (id) => api.delete(`/shipments/${id}`);
-export const uploadShipmentMedia = (file, mediaType) => {
+export const uploadShipmentMedia = (file, mediaType, audioFile = null) => {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('media_type', mediaType);
+  if (audioFile) {
+    formData.append('audio_file', audioFile);
+  }
   return api.post('/shipments/upload-media', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
@@ -74,10 +77,26 @@ export const getVideoCallWsUrl = (roomId) => {
 
 // Verification Link APIs (public – no auth needed)
 export const getVerificationLinkPublic = (token) => api.get(`/verification-link/public/${token}`);
-export const submitVerificationVideo = (token, videoFile) => {
+export const submitVerificationVideo = (token, videoFile, audioBlob = null) => {
   const formData = new FormData();
   formData.append('video', videoFile);
+  // Send separate audio track if available (guaranteed voice capture)
+  if (audioBlob) {
+    const audioFile = new File([audioBlob], 'voice_recording.webm', { type: audioBlob.type || 'audio/webm' });
+    formData.append('audio', audioFile);
+  }
   return api.post(`/verification-link/public/${token}/submit`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+export const submitVerificationScan = (token, snapshots, audioBlob = null) => {
+  const formData = new FormData();
+  formData.append('scan_data', JSON.stringify({ snapshots }));
+  if (audioBlob) {
+    const audioFile = new File([audioBlob], 'voice_scan.webm', { type: audioBlob.type || 'audio/webm' });
+    formData.append('audio', audioFile);
+  }
+  return api.post(`/verification-link/public/${token}/scan`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
 };

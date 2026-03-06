@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Package, MapPin, User, Upload, ArrowRight, ArrowLeft, CheckCircle,
-  Camera, X, Shield, Video, Image, StopCircle, RotateCcw, Play, Pause
+  Camera, X, Shield, Video, Image, StopCircle, RotateCcw, Play, Pause,
+  Mic, MicOff
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { createShipment, uploadShipmentMedia } from '../services/api';
@@ -30,12 +31,20 @@ const NewShipment = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
   const [cameraReady, setCameraReady] = useState(false);
+  const [hasAudioTrack, setHasAudioTrack] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [recordedAudioBlob, setRecordedAudioBlob] = useState(null);  // separate audio
 
   const cameraVideoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const audioAnimRef = useRef(null);
+  const audioRecorderRef = useRef(null);      // separate audio MediaRecorder
+  const audioChunksRef = useRef([]);           // separate audio chunks
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -61,6 +70,7 @@ const NewShipment = () => {
   const removeMedia = () => {
     stopCamera();
     setFormData({ ...formData, receiverImage: null, receiverImageFile: null, receiverVideo: null, receiverVideoFile: null, mediaType: null });
+    setRecordedAudioBlob(null);
     setMediaMode(null);
     setIsRecording(false);
     setRecordDuration(0);
@@ -70,8 +80,46 @@ const NewShipment = () => {
   // ── Camera helpers ──────────────────────────────────────
   const startCamera = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
       streamRef.current = stream;
+
+      // Validate audio tracks
+      const audioTracks = stream.getAudioTracks();
+      const audioOk = audioTracks.length > 0 && audioTracks[0].enabled;
+      setHasAudioTrack(audioOk);
+
+      if (audioOk) {
+        // Use a CLONED audio track for monitoring so AudioContext doesn't interfere with MediaRecorder
+        try {
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const monitorTrack = audioTracks[0].clone();
+          const monitorStream = new MediaStream([monitorTrack]);
+          const source = audioCtx.createMediaStreamSource(monitorStream);
+          const analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.5;
+          source.connect(analyser);
+          // Do NOT connect to audioCtx.destination
+          audioContextRef.current = audioCtx;
+          analyserRef.current = analyser;
+
+          const updateLevel = () => {
+            if (!analyserRef.current) return;
+            const data = new Uint8Array(analyserRef.current.frequencyBinCount);
+            analyserRef.current.getByteFrequencyData(data);
+            const avg = data.reduce((a, b) => a + b, 0) / data.length;
+            setAudioLevel(Math.min(avg / 128, 1));
+            audioAnimRef.current = requestAnimationFrame(updateLevel);
+          };
+          updateLevel();
+        } catch (e) {
+          console.warn('Audio level monitoring not available:', e);
+        }
+      }
+
       if (cameraVideoRef.current) {
         cameraVideoRef.current.srcObject = stream;
       }
@@ -83,6 +131,15 @@ const NewShipment = () => {
   }, []);
 
   const stopCamera = useCallback(() => {
+    if (audioAnimRef.current) {
+      cancelAnimationFrame(audioAnimRef.current);
+      audioAnimRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+      analyserRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
@@ -92,35 +149,91 @@ const NewShipment = () => {
       timerRef.current = null;
     }
     setCameraReady(false);
+    setHasAudioTrack(false);
+    setAudioLevel(0);
   }, []);
 
   const startRecording = () => {
     chunksRef.current = [];
+    audioChunksRef.current = [];
+    setRecordedAudioBlob(null);
     const stream = streamRef.current;
     if (!stream) return;
 
-    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-      ? 'video/webm;codecs=vp9,opus'
-      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
-        ? 'video/webm;codecs=vp8,opus'
-        : 'video/webm';
+    const audioTracks = stream.getAudioTracks();
+    const videoTracks = stream.getVideoTracks();
+    audioTracks.forEach(t => { t.enabled = true; });
 
-    const recorder = new MediaRecorder(stream, { mimeType });
+    // ─── Video MediaRecorder ───────────────────────────────────────
+    const recordingStream = new MediaStream([...videoTracks, ...audioTracks]);
+    const videoCodecs = [
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9,opus',
+      'video/webm',
+      'video/mp4',
+    ];
+    let selectedVideoMime = '';
+    for (const mime of videoCodecs) {
+      if (MediaRecorder.isTypeSupported(mime)) { selectedVideoMime = mime; break; }
+    }
+
+    let recorder;
+    try {
+      recorder = selectedVideoMime
+        ? new MediaRecorder(recordingStream, { mimeType: selectedVideoMime, videoBitsPerSecond: 2500000 })
+        : new MediaRecorder(recordingStream);
+    } catch {
+      recorder = new MediaRecorder(recordingStream);
+    }
     mediaRecorderRef.current = recorder;
 
     recorder.ondataavailable = (e) => {
       if (e.data.size > 0) chunksRef.current.push(e.data);
     };
-
     recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: mimeType });
+      const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'video/webm' });
       const url = URL.createObjectURL(blob);
+      console.log('[NewShipment] Video blob:', blob.size, blob.type);
       setFormData(prev => ({ ...prev, receiverVideo: url, receiverVideoFile: blob, receiverImage: null, mediaType: 'video' }));
-      stopCamera();
-      setMediaMode(null);
-      setIsRecording(false);
-      setRecordDuration(0);
     };
+
+    // ─── SEPARATE Audio-only MediaRecorder (GUARANTEED audio capture) ───
+    if (audioTracks.length > 0) {
+      const audioOnlyStream = new MediaStream(audioTracks.map(t => t.clone()));
+      const audioCodecs = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+      ];
+      let selectedAudioMime = '';
+      for (const mime of audioCodecs) {
+        if (MediaRecorder.isTypeSupported(mime)) { selectedAudioMime = mime; break; }
+      }
+
+      let audioRecorder;
+      try {
+        audioRecorder = selectedAudioMime
+          ? new MediaRecorder(audioOnlyStream, { mimeType: selectedAudioMime, audioBitsPerSecond: 128000 })
+          : new MediaRecorder(audioOnlyStream);
+      } catch {
+        audioRecorder = new MediaRecorder(audioOnlyStream);
+      }
+      console.log('[NewShipment] Separate audio recorder MIME:', audioRecorder.mimeType);
+
+      audioRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      audioRecorder.onstop = () => {
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, { type: audioRecorder.mimeType || 'audio/webm' });
+          console.log('[NewShipment] Separate audio blob:', audioBlob.size, audioBlob.type);
+          setRecordedAudioBlob(audioBlob);
+        }
+      };
+      audioRecorderRef.current = audioRecorder;
+      audioRecorder.start(500);
+    }
 
     recorder.start(300);
     setIsRecording(true);
@@ -129,6 +242,10 @@ const NewShipment = () => {
   };
 
   const stopRecording = () => {
+    // Stop separate audio recorder first
+    if (audioRecorderRef.current && audioRecorderRef.current.state !== 'inactive') {
+      audioRecorderRef.current.stop();
+    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
@@ -136,6 +253,13 @@ const NewShipment = () => {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    // Allow onstop handlers 300ms to finish before cleaning up UI
+    setTimeout(() => {
+      stopCamera();
+      setMediaMode(null);
+      setIsRecording(false);
+      setRecordDuration(0);
+    }, 300);
   };
 
   // Start camera when recordVideo mode selected
@@ -159,6 +283,7 @@ const NewShipment = () => {
     try {
       let imageUrl = null;
       let videoUrl = null;
+      let audioUrl = null;
       let mediaTypeVal = null;
 
       // Upload image file if present
@@ -168,13 +293,22 @@ const NewShipment = () => {
         mediaTypeVal = 'image';
       }
 
-      // Upload video file if present
+      // Upload video file if present (with separate audio if available)
       if (formData.mediaType === 'video' && formData.receiverVideoFile) {
         const file = formData.receiverVideoFile instanceof Blob && !(formData.receiverVideoFile instanceof File)
           ? new File([formData.receiverVideoFile], 'recorded_video.webm', { type: formData.receiverVideoFile.type || 'video/webm' })
           : formData.receiverVideoFile;
-        const uploadRes = await uploadShipmentMedia(file, 'video');
+
+        // Prepare separate audio file if captured
+        let audioFile = null;
+        if (recordedAudioBlob) {
+          audioFile = new File([recordedAudioBlob], 'recorded_audio.webm', { type: recordedAudioBlob.type || 'audio/webm' });
+          console.log('[NewShipment] Sending separate audio file:', audioFile.size, audioFile.type);
+        }
+
+        const uploadRes = await uploadShipmentMedia(file, 'video', audioFile);
         videoUrl = uploadRes.data.url;
+        audioUrl = uploadRes.data.audio_url || null;
         mediaTypeVal = 'video';
       }
 
@@ -190,6 +324,7 @@ const NewShipment = () => {
         description: formData.description || null,
         image_url: imageUrl,
         video_url: videoUrl,
+        audio_url: audioUrl,
         media_type: mediaTypeVal,
         voice_verification_required: formData.voiceVerification,
       };
@@ -395,11 +530,45 @@ const NewShipment = () => {
                       className="w-full h-72 object-cover"
                     />
 
-                    {/* Recording indicator */}
+                    {/* Recording indicator with audio status */}
                     {isRecording && (
-                      <div className="absolute top-4 left-4 flex items-center gap-2 bg-red-600/90 px-3 py-1.5 rounded-full">
-                        <div className="w-2.5 h-2.5 bg-white rounded-full animate-pulse" />
-                        <span className="text-white text-xs font-bold">{formatTime(recordDuration)}</span>
+                      <div className="absolute top-4 left-4 flex items-center gap-3">
+                        <div className="flex items-center gap-2 bg-red-600/90 px-3 py-1.5 rounded-full">
+                          <div className="w-2.5 h-2.5 bg-white rounded-full animate-pulse" />
+                          <span className="text-white text-xs font-bold">{formatTime(recordDuration)}</span>
+                        </div>
+                        {hasAudioTrack && (
+                          <div className="flex items-center gap-1.5 bg-black/70 px-3 py-1.5 rounded-full">
+                            <Mic className="w-3.5 h-3.5 text-green-400" />
+                            <div className="flex items-end gap-0.5 h-3.5">
+                              {[0.15, 0.3, 0.45, 0.6, 0.8].map((threshold, i) => (
+                                <div
+                                  key={i}
+                                  className={`w-0.5 rounded-full transition-all duration-100 ${
+                                    audioLevel > threshold ? 'bg-green-400' : 'bg-gray-600'
+                                  }`}
+                                  style={{ height: `${(i + 1) * 20}%` }}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* No-audio warning */}
+                    {!hasAudioTrack && cameraReady && (
+                      <div className="absolute top-4 left-4 flex items-center gap-2 bg-yellow-600/90 px-3 py-1.5 rounded-full">
+                        <MicOff className="w-3.5 h-3.5 text-white" />
+                        <span className="text-white text-xs font-bold">No mic</span>
+                      </div>
+                    )}
+
+                    {/* Mic ready indicator */}
+                    {hasAudioTrack && !isRecording && cameraReady && (
+                      <div className="absolute top-4 left-4 flex items-center gap-2 bg-green-600/80 px-3 py-1.5 rounded-full">
+                        <Mic className="w-3.5 h-3.5 text-white" />
+                        <span className="text-white text-xs font-bold">Mic ready</span>
                       </div>
                     )}
 
