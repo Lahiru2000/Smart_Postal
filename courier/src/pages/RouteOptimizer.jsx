@@ -57,6 +57,7 @@ import {
   getSessionDisruptions,
   createRedirection as apiCreateRedirection,
   getSessionRedirections,
+  updateStopPriority, // NEW: Priority update API
 } from "../services/api";
 
 // ─── API ────────────────────────────────────────────────────────────────────
@@ -384,12 +385,19 @@ const RouteOptimizer = () => {
   const [redirectionLog, setRedirectionLog] = useState([]);
   const [showRedirectionLog, setShowRedirectionLog] = useState(false);
 
+  // ── Feature: Dynamic Priority Updates (NEW) ──
+  const [priorityUpdateMode, setPriorityUpdateMode] = useState(false);
+  const [startPoint, setStartPoint] = useState(null);
+  const [rerouteTrigger, setRerouteTrigger] = useState(0);
+  const [startMarker, setStartMarker] = useState(null);
+
   // ── Refs ──
   const mapRef = useRef(null);
   const gpsWatchRef = useRef(null); // Geolocation watchPosition ID
   const trafficIntervalRef = useRef(null);
   const searchInputRef = useRef(null);
   const markersRef = useRef([]);
+  const polylineRefs = useRef([]); // priority-colored route segments
 
   useEffect(() => {
     markersRef.current = markers;
@@ -503,11 +511,7 @@ const RouteOptimizer = () => {
       const renderer = new window.google.maps.DirectionsRenderer({
         map: newMap,
         suppressMarkers: true,
-        polylineOptions: {
-          strokeColor: "#FFC000",
-          strokeWeight: 5,
-          strokeOpacity: 0.85,
-        },
+        suppressPolylines: true, // we draw per-leg priority-coloured lines ourselves
       });
       setDirectionsRenderer(renderer);
       newMap.addListener("click", (e) => handleMapClick(e, newMap));
@@ -629,14 +633,74 @@ const RouteOptimizer = () => {
     );
     setMarkers(nm);
     if (directionsRenderer) directionsRenderer.setDirections({ routes: [] });
+    clearPriorityPolylines();
     setRouteResults(null);
     clearWeather();
   };
 
   const updatePriority = (index, priority) =>
-    setMarkers((prev) =>
-      prev.map((m, i) => (i === index ? { ...m, priority } : m)),
-    );
+    setMarkers((prev) => {
+      const updated = prev.map((m, i) =>
+        i === index ? { ...m, priority } : m,
+      );
+      // Recolor the map marker immediately to reflect the new priority
+      const target = updated[index];
+      if (target?.marker && window.google) {
+        target.marker.setIcon({
+          path: window.google.maps.SymbolPath.CIRCLE,
+          scale: 14,
+          fillColor: getPriorityMarkerColor(priority),
+          fillOpacity: 1,
+          strokeColor: "#000",
+          strokeWeight: 2,
+        });
+      }
+      return updated;
+    });
+
+  // ─── PRIORITY + NEAREST-NEIGHBOR SORT ────────────────────────────────────
+  // Groups stops by priority tier (Urgent→High→Normal→Low), then within each
+  // tier orders them by nearest-neighbor so the path between same-priority
+  // stops is always the shortest possible chain.
+  //
+  // @param  stops      - array of {lat, lng, priority, ...}
+  // @param  startFrom  - {lat, lng} the position we start travelling FROM
+  // @returns           - flat ordered array (all tiers stitched together)
+  const priorityNearestNeighborSort = (stops, startFrom) => {
+    const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
+
+    // Bucket stops by priority tier
+    const buckets = {};
+    PRIORITY_ORDER.forEach((p) => (buckets[p] = []));
+    stops.forEach((s) => {
+      const tier = PRIORITY_ORDER.includes(s.priority) ? s.priority : "normal";
+      buckets[tier].push(s);
+    });
+
+    const result = [];
+    let cursor = startFrom; // track where we are after each stop
+
+    PRIORITY_ORDER.forEach((tier) => {
+      const pool = [...buckets[tier]];
+      while (pool.length > 0) {
+        // Find the nearest stop to our current position
+        let nearestIdx = 0;
+        let nearestDist = Infinity;
+        pool.forEach((stop, i) => {
+          const d = haversineKm(cursor, stop);
+          if (d < nearestDist) {
+            nearestDist = d;
+            nearestIdx = i;
+          }
+        });
+        const chosen = pool.splice(nearestIdx, 1)[0];
+        result.push(chosen);
+        cursor = chosen; // advance cursor
+      }
+    });
+
+    return result;
+  };
 
   // ─── ROUTE OPTIMIZATION ────────────────────────────────────────────────
   const optimizeRoute = async () => {
@@ -648,25 +712,23 @@ const RouteOptimizer = () => {
     setOptimizing(true);
 
     try {
-      const orderedLocations = markers.map((m) => ({
+      const allLocations = markers.map((m) => ({
         name: m.name,
         lat: m.marker.getPosition().lat(),
         lng: m.marker.getPosition().lng(),
         priority: m.priority,
       }));
 
-      const origin = orderedLocations[0];
-      const destination = orderedLocations[orderedLocations.length - 1];
-      let waypoints = orderedLocations.slice(1, -1);
-      let optimizeWaypoints = true;
+      // Always apply priority + nearest-neighbor sort:
+      //   Urgent stops first (nearest-neighbor within group),
+      //   then High, Normal, Low — each group chained from
+      //   where the previous group ended.
+      const startFrom = allLocations[0]; // use first pin as departure point
+      const sorted = priorityNearestNeighborSort(allLocations, startFrom);
 
-      // Priority mode: sort urgent first, skip Google reordering
-      if (priorityMode && waypoints.length > 0) {
-        waypoints.sort(
-          (a, b) => PRIORITIES[a.priority].order - PRIORITIES[b.priority].order,
-        );
-        optimizeWaypoints = false;
-      }
+      const origin = sorted[0];
+      const destination = sorted[sorted.length - 1];
+      const waypoints = sorted.slice(1, -1);
 
       const directionsService = new window.google.maps.DirectionsService();
       const request = {
@@ -679,7 +741,7 @@ const RouteOptimizer = () => {
           location: new window.google.maps.LatLng(w.lat, w.lng),
           stopover: true,
         })),
-        optimizeWaypoints,
+        optimizeWaypoints: false, // order already determined by our algorithm
         travelMode: "DRIVING",
         drivingOptions: {
           departureTime: new Date(),
@@ -704,13 +766,12 @@ const RouteOptimizer = () => {
           totalDistance += leg.distance.value;
         });
 
-        const waypointOrder = result.routes[0].waypoint_order;
-        const optimizedRoute =
-          optimizeWaypoints && waypointOrder
-            ? [origin, ...waypointOrder.map((i) => waypoints[i]), destination]
-            : [origin, ...waypoints, destination];
+        // `sorted` IS the optimized route — priority + proximity ordered
+        const optimizedRoute = sorted;
 
-        const googleMapsUrl = `https://www.google.com/maps/dir/${optimizedRoute.map((l) => `${l.lat},${l.lng}`).join("/")}`;
+        const googleMapsUrl = `https://www.google.com/maps/dir/${optimizedRoute
+          .map((l) => `${l.lat},${l.lng}`)
+          .join("/")}`;
 
         setRouteResults({
           totalDuration,
@@ -720,7 +781,10 @@ const RouteOptimizer = () => {
           legs: result.routes[0].legs,
         });
 
-        // Re-draw markers with priority colours
+        // Draw one coloured segment per leg (colour = destination stop priority)
+        drawPriorityPolylines(result, optimizedRoute);
+
+        // Re-draw markers: number = delivery order, colour = priority tier
         markers.forEach((m) => m.marker.setMap(null));
         const newMarkers = optimizedRoute.map((loc, i) => {
           const marker = new window.google.maps.Marker({
@@ -885,6 +949,47 @@ const RouteOptimizer = () => {
     setWeatherData([]);
   };
 
+  // ─── PRIORITY-COLOURED ROUTE POLYLINES ───────────────────────────────────
+  // Draws one polyline per leg, coloured by the destination stop's priority.
+  const clearPriorityPolylines = () => {
+    polylineRefs.current.forEach((p) => p.setMap(null));
+    polylineRefs.current = [];
+  };
+
+  const drawPriorityPolylines = (directionsResult, route) => {
+    clearPriorityPolylines();
+    if (!map || !window.google) return;
+
+    directionsResult.routes[0].legs.forEach((leg, legIndex) => {
+      // The stop we are heading TO in this leg
+      const destStop = route[legIndex + 1] || route[route.length - 1];
+      const priority = destStop?.priority || "normal";
+      const color = getPriorityMarkerColor(priority);
+
+      // Collect every lat/lng point across all steps in the leg
+      const path = [];
+      leg.steps.forEach((step) => {
+        (step.path || []).forEach((pt) => path.push(pt));
+      });
+
+      // Thin dark shadow for readability, then the priority-coloured line on top
+      [
+        { color: "#000000", weight: 8, opacity: 0.25 },
+        { color, weight: 5, opacity: 0.9 },
+      ].forEach(({ color: c, weight, opacity }) => {
+        const pl = new window.google.maps.Polyline({
+          path,
+          strokeColor: c,
+          strokeWeight: weight,
+          strokeOpacity: opacity,
+          map,
+          zIndex: weight, // thinner line renders on top
+        });
+        polylineRefs.current.push(pl);
+      });
+    });
+  };
+
   // ─── IMPORT FROM SHIPMENTS ────────────────────────────────────────────
   const loadShipments = async () => {
     setLoadingShipments(true);
@@ -930,6 +1035,7 @@ const RouteOptimizer = () => {
     });
     if (directionsRenderer) directionsRenderer.setDirections({ routes: [] });
     clearWeather();
+    clearPriorityPolylines();
     setMarkers([]);
     setShowMap(true);
     setRouteResults(null);
@@ -941,6 +1047,7 @@ const RouteOptimizer = () => {
     });
     if (directionsRenderer) directionsRenderer.setDirections({ routes: [] });
     clearWeather();
+    clearPriorityPolylines();
     setMarkers([]);
     setRouteResults(null);
     setShowMap(false);
@@ -1035,7 +1142,10 @@ const RouteOptimizer = () => {
         });
 
         // Update renderer with fresh traffic-aware directions
-        if (directionsRenderer) directionsRenderer.setDirections(result);
+        if (directionsRenderer) {
+          directionsRenderer.setDirections(result);
+          drawPriorityPolylines(result, routeResults.optimizedRoute);
+        }
 
         const totalTrafficDuration = legs.reduce(
           (sum, l) => sum + l.durationWithTraffic,
@@ -1083,12 +1193,39 @@ const RouteOptimizer = () => {
   // ══════════════════════════════════════════════════════════════════════════
   const startDelivery = async () => {
     if (!routeResults) return;
+
+    // NEW: Capture start location
+    let capturedStartPoint = null;
+    if (navigator.geolocation) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject);
+        });
+        capturedStartPoint = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+          name: "Your Location",
+        };
+        setStartPoint(capturedStartPoint);
+      } catch (error) {
+        console.warn("Could not get start location:", error);
+        // Fallback to first route point
+        capturedStartPoint = {
+          lat: routeResults.optimizedRoute[0].lat,
+          lng: routeResults.optimizedRoute[0].lng,
+          name: "Start Point",
+        };
+        setStartPoint(capturedStartPoint);
+      }
+    }
+
     try {
       const { data } = await startDeliverySession({
         route_data: routeResults.optimizedRoute,
         google_maps_url: routeResults.googleMapsUrl,
         total_distance_m: routeResults.totalDistance,
         total_duration_s: routeResults.totalDuration,
+        start_location: capturedStartPoint, // NEW: Include start location
       });
       setSessionId(data.id);
       setDeliveryMode(true);
@@ -1199,6 +1336,7 @@ const RouteOptimizer = () => {
     directionsService.route(request, (result, status) => {
       if (status === "OK") {
         directionsRenderer.setDirections(result);
+        drawPriorityPolylines(result, remaining);
         let rerouteDuration = 0,
           rerouteDistance = 0;
         result.routes[0].legs.forEach((leg) => {
@@ -1236,7 +1374,187 @@ const RouteOptimizer = () => {
     setRerouteResult(null);
     setShowRedirectPanel(null);
     setRedirectionLog([]);
+    setPriorityUpdateMode(false); // NEW
+    setStartPoint(null); // NEW
   };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ║  NEW FEATURE — DYNAMIC PRIORITY UPDATES
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Change priority of a stop during active delivery
+  const changePriority = async (stopIndex, newPriority) => {
+    if (!sessionId) return;
+
+    try {
+      // Update priority on server
+      const { data } = await updateStopPriority(
+        sessionId,
+        stopIndex,
+        newPriority,
+      );
+
+      // Update local route data
+      if (routeResults?.optimizedRoute) {
+        const updatedRoute = routeResults.optimizedRoute.map((stop, idx) =>
+          idx === stopIndex ? { ...stop, priority: newPriority } : stop,
+        );
+
+        setRouteResults((prev) => ({
+          ...prev,
+          optimizedRoute: updatedRoute,
+        }));
+
+        // Trigger automatic re-routing
+        await rerouteWithNewPriorities(updatedRoute);
+      }
+
+      console.log(`✅ Priority updated: Stop ${stopIndex} → ${newPriority}`);
+    } catch (err) {
+      console.error("Failed to update priority:", err);
+      setError("Priority update failed. Please try again.");
+    }
+  };
+
+  // Re-optimize route based on new priorities
+  const rerouteWithNewPriorities = async (updatedRoute) => {
+    if (!updatedRoute || !window.google) return;
+
+    setRerouteLoading(true);
+    console.log("🔄 Re-calculating route based on new priorities...");
+
+    // Filter out completed stops, keep from current position onward
+    const remaining = updatedRoute.filter(
+      (stop, idx) => !completedStops.has(idx) && idx >= currentStopIdx,
+    );
+
+    if (remaining.length < 2) {
+      setRerouteLoading(false);
+      return;
+    }
+
+    // Re-sort remaining stops: priority tiers + nearest-neighbor within each tier
+    // Start from the current stop (first in remaining array)
+    const startFrom = remaining[0];
+    const prioritySorted = priorityNearestNeighborSort(remaining, startFrom);
+
+    const origin = prioritySorted[0];
+    const destination = prioritySorted[prioritySorted.length - 1];
+    const waypoints = prioritySorted.slice(1, -1);
+
+    const directionsService = new window.google.maps.DirectionsService();
+    const request = {
+      origin: new window.google.maps.LatLng(origin.lat, origin.lng),
+      destination: new window.google.maps.LatLng(
+        destination.lat,
+        destination.lng,
+      ),
+      waypoints: waypoints.map((w) => ({
+        location: new window.google.maps.LatLng(w.lat, w.lng),
+        stopover: true,
+      })),
+      optimizeWaypoints: false, // already ordered by our algorithm
+      travelMode: "DRIVING",
+      drivingOptions: { departureTime: new Date(), trafficModel: "bestguess" },
+    };
+
+    directionsService.route(request, (result, status) => {
+      if (status === "OK") {
+        directionsRenderer.setDirections(result);
+        drawPriorityPolylines(result, prioritySorted);
+
+        let newDuration = 0,
+          newDistance = 0;
+        result.routes[0].legs.forEach((leg) => {
+          newDuration += leg.duration_in_traffic?.value || leg.duration.value;
+          newDistance += leg.distance.value;
+        });
+
+        // Update route results with new optimized order
+        setRouteResults((prev) => ({
+          ...prev,
+          optimizedRoute: prioritySorted,
+          totalDuration: newDuration,
+          totalDistance: newDistance,
+          legs: result.routes[0].legs,
+        }));
+
+        // Redraw markers: number = new delivery order, colour = priority
+        markers.forEach((m) => m.marker?.setMap(null));
+        const newMarkers = prioritySorted.map((loc, i) => {
+          const marker = new window.google.maps.Marker({
+            position: { lat: loc.lat, lng: loc.lng },
+            map,
+            label: {
+              text: `${i + 1}`,
+              color: "#000",
+              fontWeight: "bold",
+              fontSize: "12px",
+            },
+            icon: {
+              path: window.google.maps.SymbolPath.CIRCLE,
+              scale: 14,
+              fillColor: getPriorityMarkerColor(loc.priority),
+              fillOpacity: 1,
+              strokeColor: "#000",
+              strokeWeight: 2,
+            },
+          });
+          return { marker, ...loc };
+        });
+        setMarkers(newMarkers);
+
+        console.log("✅ Route re-optimized with priority + nearest-neighbor");
+        setRerouteTrigger((prev) => prev + 1);
+      } else {
+        console.error("Re-route failed:", status);
+        setError("Failed to recalculate route. Please try manually.");
+      }
+      setRerouteLoading(false);
+    });
+  };
+
+  // Create start point marker
+  const createStartPointMarker = (startLoc) => {
+    if (!map || !startLoc) return null;
+
+    const marker = new window.google.maps.Marker({
+      position: { lat: startLoc.lat, lng: startLoc.lng },
+      map,
+      label: {
+        text: "START",
+        color: "#FFF",
+        fontWeight: "bold",
+        fontSize: "11px",
+      },
+      icon: {
+        path: window.google.maps.SymbolPath.CIRCLE,
+        scale: 18,
+        fillColor: "#10B981", // Green
+        fillOpacity: 1,
+        strokeColor: "#FFF",
+        strokeWeight: 3,
+      },
+      title: "Delivery Start Point",
+      zIndex: 1000, // Always on top
+    });
+
+    setStartMarker(marker);
+    return marker;
+  };
+
+  // useEffect to create start marker when delivery mode starts
+  useEffect(() => {
+    if (deliveryMode && startPoint && map && !startMarker) {
+      createStartPointMarker(startPoint);
+    }
+    return () => {
+      if (startMarker) {
+        startMarker.setMap(null);
+        setStartMarker(null);
+      }
+    };
+  }, [deliveryMode, startPoint, map]);
 
   // ══════════════════════════════════════════════════════════════════════════
   // ║  FEATURE 3 — INTER-POSTMAN REDIRECTION
@@ -1527,7 +1845,154 @@ const RouteOptimizer = () => {
                       ? "Urgent stops first"
                       : "Google-optimized order",
                     val: priorityMode,
-                    set: setPriorityMode,
+                    set: (newVal) => {
+                      setPriorityMode(newVal);
+                      // When turning OFF with an existing route: immediately
+                      // re-run Google's default distance optimisation and
+                      // redraw the path in plain yellow (no priority colours).
+                      if (
+                        !newVal &&
+                        routeResults &&
+                        markers.length >= 2 &&
+                        window.google
+                      ) {
+                        clearPriorityPolylines();
+                        setRerouteResult(null);
+                        setTrafficLegs([]);
+                        setShowTrafficPanel(false);
+
+                        const locs = markers.map((m) => ({
+                          name: m.name,
+                          lat: m.marker.getPosition().lat(),
+                          lng: m.marker.getPosition().lng(),
+                          priority: "normal", // strip priority for default route
+                        }));
+
+                        const origin = locs[0];
+                        const destination = locs[locs.length - 1];
+                        const waypoints = locs.slice(1, -1);
+
+                        const svc = new window.google.maps.DirectionsService();
+                        svc.route(
+                          {
+                            origin: new window.google.maps.LatLng(
+                              origin.lat,
+                              origin.lng,
+                            ),
+                            destination: new window.google.maps.LatLng(
+                              destination.lat,
+                              destination.lng,
+                            ),
+                            waypoints: waypoints.map((w) => ({
+                              location: new window.google.maps.LatLng(
+                                w.lat,
+                                w.lng,
+                              ),
+                              stopover: true,
+                            })),
+                            optimizeWaypoints: true, // Google picks shortest distance order
+                            travelMode: "DRIVING",
+                            drivingOptions: {
+                              departureTime: new Date(),
+                              trafficModel: "bestguess",
+                            },
+                          },
+                          async (result, status) => {
+                            if (status !== "OK") return;
+
+                            // Draw a single plain yellow polyline
+                            clearPriorityPolylines();
+                            result.routes[0].legs.forEach((leg) => {
+                              const path = [];
+                              leg.steps.forEach((step) =>
+                                (step.path || []).forEach((pt) =>
+                                  path.push(pt),
+                                ),
+                              );
+                              [
+                                { color: "#000000", weight: 8, opacity: 0.25 },
+                                { color: "#FFC000", weight: 5, opacity: 0.9 },
+                              ].forEach(({ color, weight, opacity }) => {
+                                const pl = new window.google.maps.Polyline({
+                                  path,
+                                  strokeColor: color,
+                                  strokeWeight: weight,
+                                  strokeOpacity: opacity,
+                                  map,
+                                  zIndex: weight,
+                                });
+                                polylineRefs.current.push(pl);
+                              });
+                            });
+
+                            let totalDuration = 0,
+                              totalDistance = 0;
+                            result.routes[0].legs.forEach((leg) => {
+                              totalDuration += leg.duration.value;
+                              totalDistance += leg.distance.value;
+                            });
+
+                            const waypointOrder =
+                              result.routes[0].waypoint_order;
+                            const optimizedRoute = [
+                              origin,
+                              ...waypointOrder.map((i) => waypoints[i]),
+                              destination,
+                            ];
+
+                            // Redraw all markers plain yellow with new order numbers
+                            markers.forEach((m) => m.marker?.setMap(null));
+                            const newMarkers = optimizedRoute.map((loc, i) => {
+                              const marker = new window.google.maps.Marker({
+                                position: { lat: loc.lat, lng: loc.lng },
+                                map,
+                                label: {
+                                  text: `${i + 1}`,
+                                  color: "#000",
+                                  fontWeight: "bold",
+                                  fontSize: "12px",
+                                },
+                                icon: {
+                                  path: window.google.maps.SymbolPath.CIRCLE,
+                                  scale: 14,
+                                  fillColor: "#FFC000",
+                                  fillOpacity: 1,
+                                  strokeColor: "#000",
+                                  strokeWeight: 2,
+                                },
+                              });
+                              return {
+                                marker,
+                                name: loc.name,
+                                lat: loc.lat,
+                                lng: loc.lng,
+                                priority: "normal",
+                              };
+                            });
+                            setMarkers(newMarkers);
+
+                            const bounds =
+                              new window.google.maps.LatLngBounds();
+                            newMarkers.forEach((m) =>
+                              bounds.extend(m.marker.getPosition()),
+                            );
+                            map.fitBounds(bounds);
+
+                            const googleMapsUrl = `https://www.google.com/maps/dir/${optimizedRoute.map((l) => `${l.lat},${l.lng}`).join("/")}`;
+                            setRouteResults({
+                              totalDuration,
+                              totalDistance,
+                              optimizedRoute,
+                              googleMapsUrl,
+                              legs: result.routes[0].legs,
+                            });
+
+                            clearWeather();
+                            await fetchRouteWeather(result, optimizedRoute);
+                          },
+                        );
+                      }
+                    },
                   },
                   {
                     label: "Weather Zones",
@@ -1696,7 +2161,7 @@ const RouteOptimizer = () => {
                                 Disrupted · Skipped
                               </span>
                             )}
-                            {!deliveryMode && (
+                            {!deliveryMode && priorityMode && (
                               <select
                                 value={m.priority}
                                 onChange={(e) =>
@@ -1811,6 +2276,12 @@ const RouteOptimizer = () => {
                         </div>
                       </div>
                       <button
+                        onClick={() => setPriorityUpdateMode(true)}
+                        className="w-full px-4 py-2.5 bg-[#FFC000] hover:bg-[#E5AC00] text-black font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all"
+                      >
+                        <TrendingUp className="w-3.5 h-3.5" /> Update Priorities
+                      </button>
+                      <button
                         onClick={endDelivery}
                         className="w-full px-4 py-2.5 bg-[#1A1A1A] hover:bg-[#252525] text-red-400 border border-red-500/30 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all"
                       >
@@ -1839,6 +2310,26 @@ const RouteOptimizer = () => {
                   </div>
                 )}
               </div>
+
+              {/* Map priority legend strip — only when Priority Mode is on */}
+              {showMap && priorityMode && (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-3 py-2 bg-[#1A1A1A] border border-[#333] rounded-xl">
+                  <span className="text-xs text-gray-500 font-semibold uppercase tracking-wider mr-1">
+                    Pin Priority:
+                  </span>
+                  {Object.entries(PRIORITIES).map(([key, p]) => (
+                    <div key={key} className="flex items-center gap-1.5">
+                      <span
+                        className="w-4 h-4 rounded-full border-2 border-black flex-shrink-0 shadow"
+                        style={{ backgroundColor: getPriorityMarkerColor(key) }}
+                      />
+                      <span className={`text-xs font-bold ${p.color}`}>
+                        {p.label}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* Results */}
               {routeResults && (
@@ -1877,6 +2368,29 @@ const RouteOptimizer = () => {
                       </div>
                     ))}
                   </div>
+
+                  {/* Route Re-optimization Banner (NEW) */}
+                  {rerouteTrigger > 0 && deliveryMode && (
+                    <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-xl flex items-center gap-3">
+                      <div className="w-8 h-8 bg-green-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <CheckCircle className="w-5 h-5 text-green-400" />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm text-white font-bold">
+                          Route Re-optimized
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          Priorities updated • New ETA calculated
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setRerouteTrigger(0)}
+                        className="text-gray-500 hover:text-white transition-colors"
+                      >
+                        <XCircle className="w-5 h-5" />
+                      </button>
+                    </div>
+                  )}
 
                   {/* Weather delay banner */}
                   {rainPoints.length > 0 && (
@@ -2360,35 +2874,169 @@ const RouteOptimizer = () => {
                       </button>
                     </div>
 
-                    {/* Optimized order */}
+                    {/* Optimized Delivery Order */}
                     <div className="pt-4 border-t border-[#333]">
-                      <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">
-                        Optimized Delivery Order
-                      </h4>
-                      <div className="space-y-1.5">
-                        {routeResults.optimizedRoute.map((loc, i) => (
-                          <div key={i} className="flex items-center gap-3">
-                            <div
-                              className="w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold text-black flex-shrink-0"
-                              style={{
-                                backgroundColor: getPriorityMarkerColor(
-                                  loc.priority,
-                                ),
-                              }}
-                            >
-                              {i + 1}
-                            </div>
-                            <p className="text-sm text-gray-300 truncate flex-1">
-                              {loc.name}
-                            </p>
-                            <span
-                              className={`text-xs font-bold ${PRIORITIES[loc.priority]?.color || "text-gray-400"}`}
-                            >
-                              {PRIORITIES[loc.priority]?.label || "Normal"}
-                            </span>
-                          </div>
-                        ))}
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                          Optimized Delivery Order
+                        </h4>
+                        <span className="text-xs text-gray-600">
+                          {routeResults.optimizedRoute.length} stops
+                        </span>
                       </div>
+
+                      {priorityMode ? (
+                        /* ── PRIORITY MODE ON: grouped by tier with legend ── */
+                        <div className="space-y-3">
+                          {/* Priority colour legend */}
+                          <div className="flex flex-wrap gap-2 p-2 bg-black/30 rounded-xl border border-[#333]">
+                            {Object.entries(PRIORITIES).map(([key, p]) => (
+                              <div
+                                key={key}
+                                className="flex items-center gap-1.5"
+                              >
+                                <span
+                                  className="w-3 h-3 rounded-full flex-shrink-0"
+                                  style={{
+                                    backgroundColor:
+                                      getPriorityMarkerColor(key),
+                                  }}
+                                />
+                                <span
+                                  className={`text-xs font-semibold ${p.color}`}
+                                >
+                                  {p.label}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* START POINT */}
+                          {startPoint && deliveryMode && (
+                            <div className="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-xl">
+                              <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white bg-green-500 flex-shrink-0">
+                                <Navigation className="w-4 h-4" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm text-white font-bold">
+                                  {startPoint.name || "Start Location"}
+                                </p>
+                                <p className="text-xs text-green-400">
+                                  Delivery Start Point
+                                </p>
+                              </div>
+                              <div className="px-2 py-1 bg-green-500/20 rounded text-xs font-bold text-green-400">
+                                START
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Grouped stops: Urgent → High → Normal → Low */}
+                          {["urgent", "high", "normal", "low"].map(
+                            (priorityKey) => {
+                              const stopsForPriority =
+                                routeResults.optimizedRoute
+                                  .map((loc, i) => ({ ...loc, routeIndex: i }))
+                                  .filter(
+                                    (loc) =>
+                                      (loc.priority || "normal") ===
+                                      priorityKey,
+                                  );
+                              if (stopsForPriority.length === 0) return null;
+                              const p = PRIORITIES[priorityKey];
+                              return (
+                                <div key={priorityKey}>
+                                  <div
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg mb-1.5 ${p.bg} border ${p.border}`}
+                                  >
+                                    <span
+                                      className="w-2 h-2 rounded-full flex-shrink-0"
+                                      style={{
+                                        backgroundColor:
+                                          getPriorityMarkerColor(priorityKey),
+                                      }}
+                                    />
+                                    <span
+                                      className={`text-xs font-bold uppercase tracking-widest ${p.color}`}
+                                    >
+                                      {p.label}
+                                    </span>
+                                    <span
+                                      className={`ml-auto text-xs font-semibold opacity-70 ${p.color}`}
+                                    >
+                                      {stopsForPriority.length}{" "}
+                                      {stopsForPriority.length === 1
+                                        ? "stop"
+                                        : "stops"}
+                                    </span>
+                                  </div>
+                                  <div className="space-y-1 pl-1">
+                                    {stopsForPriority.map((loc) => (
+                                      <div
+                                        key={loc.routeIndex}
+                                        className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-white/[0.03] transition-colors"
+                                      >
+                                        <div
+                                          className="w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold text-black flex-shrink-0 shadow"
+                                          style={{
+                                            backgroundColor:
+                                              getPriorityMarkerColor(
+                                                loc.priority,
+                                              ),
+                                          }}
+                                        >
+                                          {loc.routeIndex + 1}
+                                        </div>
+                                        <p className="text-sm text-gray-300 truncate flex-1">
+                                          {loc.name?.split(",")[0]}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            },
+                          )}
+                        </div>
+                      ) : (
+                        /* ── PRIORITY MODE OFF: simple flat numbered list ── */
+                        <div className="space-y-1.5">
+                          {startPoint && deliveryMode && (
+                            <div className="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-xl mb-2">
+                              <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-green-500 flex-shrink-0">
+                                <Navigation className="w-4 h-4 text-white" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm text-white font-bold">
+                                  {startPoint.name || "Start Location"}
+                                </p>
+                                <p className="text-xs text-green-400">
+                                  Delivery Start Point
+                                </p>
+                              </div>
+                              <div className="px-2 py-1 bg-green-500/20 rounded text-xs font-bold text-green-400">
+                                START
+                              </div>
+                            </div>
+                          )}
+                          {routeResults.optimizedRoute.map((loc, i) => (
+                            <div
+                              key={i}
+                              className="flex items-center gap-3 px-1 py-1 hover:bg-white/[0.03] rounded-lg transition-colors"
+                            >
+                              <div
+                                className="w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold text-black flex-shrink-0"
+                                style={{ backgroundColor: "#FFC000" }}
+                              >
+                                {i + 1}
+                              </div>
+                              <p className="text-sm text-gray-300 truncate flex-1">
+                                {loc.name?.split(",")[0]}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2397,6 +3045,85 @@ const RouteOptimizer = () => {
           </div>
         )}
       </div>
+
+      {/* ═══ PRIORITY UPDATE MODAL (NEW) ═══ */}
+      {deliveryMode && priorityUpdateMode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+          <div className="bg-[#1A1A1A] border border-[#333] rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-[#FFC000]/10 rounded-xl flex items-center justify-center">
+                <TrendingUp className="w-5 h-5 text-[#FFC000]" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  Update Priority
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Route will auto-recalculate
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2 mb-4">
+              {routeResults?.optimizedRoute
+                .map((stop, idx) => ({ ...stop, originalIndex: idx }))
+                .filter((stop) => !completedStops.has(stop.originalIndex))
+                .map((stop) => {
+                  const actualIdx = stop.originalIndex;
+                  return (
+                    <div
+                      key={actualIdx}
+                      className="p-3 bg-black/40 border border-[#333] rounded-xl"
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-white font-medium truncate">
+                            {stop.name?.split(",")[0]}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Stop {actualIdx + 1}
+                          </p>
+                        </div>
+                        <span
+                          className={`text-xs font-bold px-2 py-1 rounded ${PRIORITIES[stop.priority]?.bg} ${PRIORITIES[stop.priority]?.color} ${PRIORITIES[stop.priority]?.border} border`}
+                        >
+                          {PRIORITIES[stop.priority]?.label}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {Object.keys(PRIORITIES).map((priority) => (
+                          <button
+                            key={priority}
+                            onClick={() => {
+                              changePriority(actualIdx, priority);
+                              setPriorityUpdateMode(false);
+                            }}
+                            disabled={stop.priority === priority}
+                            className={`px-2 py-1.5 rounded text-xs font-bold transition-all ${
+                              stop.priority === priority
+                                ? "opacity-50 cursor-not-allowed"
+                                : "hover:opacity-80"
+                            } ${PRIORITIES[priority].bg} ${PRIORITIES[priority].color} ${PRIORITIES[priority].border} border`}
+                          >
+                            {PRIORITIES[priority].label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+
+            <button
+              onClick={() => setPriorityUpdateMode(false)}
+              className="w-full py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ═══ DISRUPTION MODAL ═══ */}
       {showDisruptionModal && disruptionTarget !== null && (

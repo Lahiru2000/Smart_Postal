@@ -1,6 +1,8 @@
 """
 Pydantic schemas for the delivery feature set.
 All timestamps are returned as ISO-8601 strings for consistent frontend parsing.
+
+ENHANCED: Added priority update support for dynamic re-routing
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ class StartSessionRequest(BaseModel):
     google_maps_url:  Optional[str] = None
     total_distance_m: Optional[int] = None
     total_duration_s: Optional[int] = None
+    start_location:   Optional[dict] = None  # NEW: {lat, lng, name}
 
 
 class CompleteStopRequest(BaseModel):
@@ -59,6 +62,29 @@ class CompleteStopRequest(BaseModel):
 class EndSessionRequest(BaseModel):
     status: str = "completed"   # completed | abandoned
 
+
+# NEW: Update stop priority dynamically during delivery
+class UpdatePriorityRequest(BaseModel):
+    stop_index: int = Field(..., ge=0)
+    new_priority: str = Field(...)
+    
+    @validator("new_priority")
+    def validate_priority(cls, v):
+        allowed = {"urgent", "high", "normal", "low"}
+        if v not in allowed:
+            raise ValueError(f"priority must be one of {allowed}")
+        return v
+
+
+# NEW: Re-optimize route request (triggered by priority changes)
+class ReoptimizeRouteRequest(BaseModel):
+    """
+    Request to recalculate optimal route based on current priorities
+    and remaining undelivered stops.
+    """
+    remaining_stops: List[RouteStop]
+    start_from_index: int = 0  # Current position in route
+    
 
 class SessionResponse(BaseModel):
     id:               int
@@ -74,6 +100,7 @@ class SessionResponse(BaseModel):
     ended_at:         Optional[datetime]
     total_distance_m: Optional[int]
     total_duration_s: Optional[int]
+    start_location:   Optional[dict]  # NEW
 
     class Config:
         from_attributes = True

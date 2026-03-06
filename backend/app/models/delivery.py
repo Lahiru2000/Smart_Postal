@@ -6,6 +6,8 @@ Tables:
   - delivery_sessions   : One per active dispatch, tracks progress
   - disruption_events   : Road closures / accidents reported mid-route
   - redirection_events  : Parcel handoffs between postmen
+
+ENHANCED: Added start_location tracking for clear route visualization
 """
 
 from datetime import datetime
@@ -74,6 +76,8 @@ class DeliverySession(Base):
     """
     Represents one postman's full delivery run.
     Created when the postman presses "Start Delivery" in the UI.
+    
+    ENHANCED: Now tracks start_location for clear route visualization
     """
     __tablename__ = "delivery_sessions"
 
@@ -88,6 +92,9 @@ class DeliverySession(Base):
 
     status          = Column(String(20), default=SessionStatus.active)
     google_maps_url = Column(Text, nullable=True)
+
+    # NEW: Track where delivery started from
+    start_location  = Column(JSON, nullable=True)        # {lat, lng, name}
 
     started_at      = Column(DateTime, default=datetime.utcnow)
     ended_at        = Column(DateTime, nullable=True)

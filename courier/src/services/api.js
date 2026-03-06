@@ -66,7 +66,8 @@ export const getNearbyPostmen = (lat, lng, radiusKm = 10) =>
  *   route_data: Array<{name, lat, lng, priority}>,
  *   google_maps_url?: string,
  *   total_distance_m?: number,
- *   total_duration_s?: number
+ *   total_duration_s?: number,
+ *   start_location?: {lat, lng, name}
  * }} payload
  */
 export const startDeliverySession = (payload) =>
@@ -96,6 +97,24 @@ export const completeStop = (sessionId, stopIndex) =>
  */
 export const endDeliverySession = (sessionId, sessionStatus = "completed") =>
   api.patch(`/delivery/sessions/${sessionId}/end`, { status: sessionStatus });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELIVERY — Priority Updates (NEW)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Update the priority of a stop during active delivery.
+ * Triggers dynamic re-routing in the frontend.
+ *
+ * @param {number} sessionId
+ * @param {number} stopIndex
+ * @param {'urgent'|'high'|'normal'|'low'} newPriority
+ */
+export const updateStopPriority = (sessionId, stopIndex, newPriority) =>
+  api.patch(`/delivery/sessions/${sessionId}/stop/${stopIndex}/priority`, {
+    stop_index: stopIndex,
+    new_priority: newPriority,
+  });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DELIVERY — Disruptions

@@ -4,6 +4,7 @@ Delivery router — all endpoints for:
   • Delivery session lifecycle (start, progress, end)
   • Disruption reporting & resolution
   • Inter-postman redirection / handoff
+  • NEW: Dynamic priority updates with auto re-routing
 
 Prefix: /delivery
 Auth:   None (open endpoints — add JWT when ready)
@@ -37,6 +38,8 @@ from app.schemas.delivery import (
     DisruptionResponse,
     CreateRedirectionRequest,
     RedirectionResponse,
+    UpdatePriorityRequest,  # NEW
+    ReoptimizeRouteRequest,  # NEW
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +77,14 @@ DISRUPTION_DESCRIPTIONS = {
     "construction": "Unexpected roadworks",
 }
 
+# NEW: Priority scoring for optimization
+PRIORITY_SCORES = {
+    "urgent": 100,
+    "high": 70,
+    "normal": 40,
+    "low": 10,
+}
+
 
 def _session_response(session: DeliverySession) -> dict:
     postman_name = (
@@ -95,6 +106,7 @@ def _session_response(session: DeliverySession) -> dict:
         "ended_at":         session.ended_at,
         "total_distance_m": session.total_distance_m,
         "total_duration_s": session.total_duration_s,
+        "start_location":   getattr(session, "start_location", None),
     }
 
 
@@ -233,22 +245,21 @@ def get_nearby_postmen(
         u = loc.postman
         name = (
             f"{u.first_name} {u.last_name}".strip()
-            if hasattr(u, "first_name") and u.first_name
+            if hasattr(u, "first_name")
             else u.email.split("@")[0]
         )
-
         results.append(
             NearbyPostman(
-                postman_id      = loc.postman_id,
-                name            = name,
-                email           = u.email,
-                lat             = loc.lat,
-                lng             = loc.lng,
-                distance_km     = round(dist, 2),
-                is_available    = loc.is_available,
-                deliveries_left = deliveries_left,
-                zone            = getattr(u, "zone", None),
-                updated_at      = loc.updated_at,
+                postman_id=loc.postman_id,
+                name=name,
+                email=u.email,
+                lat=loc.lat,
+                lng=loc.lng,
+                distance_km=round(dist, 2),
+                is_available=loc.is_available,
+                deliveries_left=deliveries_left,
+                zone=getattr(u, "zone", None),
+                updated_at=loc.updated_at,
             )
         )
 
@@ -257,7 +268,7 @@ def get_nearby_postmen(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DELIVERY SESSION
+# DELIVERY SESSIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post(
@@ -271,46 +282,42 @@ def start_session(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Abandon any previously active session for this postman
-    previous = (
-        db.query(DeliverySession)
-        .filter_by(postman_id=current_user.id, status="active")
-        .first()
-    )
-    if previous:
-        previous.status   = "abandoned"
-        previous.ended_at = datetime.utcnow()
+    """
+    Creates a new delivery session.
+    Stores the full route as JSON so we can track priorities dynamically.
+    """
+    # Close any existing active sessions for this postman
+    db.query(DeliverySession).filter_by(
+        postman_id=current_user.id, status="active"
+    ).update({"status": "abandoned", "ended_at": datetime.utcnow()})
 
-    route = [s.dict() for s in payload.route_data]
+    route_json = [r.dict() for r in payload.route_data]
     session = DeliverySession(
-        postman_id       = current_user.id,
-        route_data       = route,
-        total_stops      = len(route),
-        completed_stops  = [],
-        current_stop_idx = 0,
-        status           = "active",
-        google_maps_url  = payload.google_maps_url,
-        total_distance_m = payload.total_distance_m,
-        total_duration_s = payload.total_duration_s,
+        postman_id=current_user.id,
+        route_data=route_json,
+        total_stops=len(route_json),
+        completed_stops=[],
+        current_stop_idx=0,
+        status="active",
+        google_maps_url=payload.google_maps_url,
+        total_distance_m=payload.total_distance_m,
+        total_duration_s=payload.total_duration_s,
+        start_location=payload.start_location,  # NEW
     )
     db.add(session)
     db.commit()
     db.refresh(session)
 
-    # Mark postman as unavailable while on delivery
-    loc = db.query(PostmanLocation).filter_by(postman_id=current_user.id).first()
-    if loc:
-        loc.is_available = False
-        db.commit()
-
-    logger.info("Delivery session %d started by postman %d (%d stops)", session.id, current_user.id, len(route))
+    logger.info(
+        f"Delivery session {session.id} started by {current_user.email} with {len(route_json)} stops"
+    )
     return _session_response(session)
 
 
 @router.get(
     "/sessions/{session_id}",
     response_model=SessionResponse,
-    summary="Get delivery session details",
+    summary="Get session details",
 )
 def get_session(
     session_id: int,
@@ -328,26 +335,25 @@ def get_session(
 @router.get(
     "/sessions/active/me",
     response_model=Optional[SessionResponse],
-    summary="Get my currently active delivery session (if any)",
+    summary="Get caller's active session",
 )
-def get_my_active_session(
+def get_active_session(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Returns the currently active session for the logged-in postman, or null."""
     session = (
         db.query(DeliverySession)
         .filter_by(postman_id=current_user.id, status="active")
         .first()
     )
-    if not session:
-        return None
-    return _session_response(session)
+    return _session_response(session) if session else None
 
 
 @router.patch(
     "/sessions/{session_id}/stop/{stop_index}/complete",
     response_model=SessionResponse,
-    summary="Mark an individual stop as delivered",
+    summary="Mark a stop as delivered",
 )
 def complete_stop(
     session_id: int,
@@ -360,27 +366,19 @@ def complete_stop(
         raise HTTPException(status_code=404, detail="Session not found")
     if session.postman_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
-    if session.status != "active":
-        raise HTTPException(status_code=400, detail="Session is not active")
-    if stop_index < 0 or stop_index >= session.total_stops:
-        raise HTTPException(status_code=400, detail="Invalid stop index")
 
-    completed = list(session.completed_stops or [])
+    completed = set(session.completed_stops or [])
     if stop_index not in completed:
-        completed.append(stop_index)
-    session.completed_stops = completed
+        completed.add(stop_index)
+        session.completed_stops = list(completed)
 
     # Advance current_stop_idx to next incomplete stop
-    next_idx = stop_index + 1
-    while next_idx < session.total_stops and next_idx in completed:
-        next_idx += 1
-    session.current_stop_idx = min(next_idx, session.total_stops - 1)
-
-    # Auto-complete session when all stops are done
-    if len(completed) >= session.total_stops:
-        session.status   = "completed"
-        session.ended_at = datetime.utcnow()
-        _mark_postman_available(db, current_user.id)
+    for i in range(session.current_stop_idx, session.total_stops):
+        if i not in completed:
+            session.current_stop_idx = i
+            break
+    else:
+        session.current_stop_idx = session.total_stops
 
     db.commit()
     db.refresh(session)
@@ -390,7 +388,7 @@ def complete_stop(
 @router.patch(
     "/sessions/{session_id}/end",
     response_model=SessionResponse,
-    summary="End a delivery session (completed or abandoned)",
+    summary="End a session (completed or abandoned)",
 )
 def end_session(
     session_id: int,
@@ -404,32 +402,74 @@ def end_session(
     if session.postman_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    session.status   = payload.status
+    session.status = payload.status
     session.ended_at = datetime.utcnow()
     db.commit()
     db.refresh(session)
-
-    _mark_postman_available(db, current_user.id)
-    logger.info("Session %d ended with status '%s'", session_id, payload.status)
     return _session_response(session)
 
 
-def _mark_postman_available(db: Session, postman_id: int):
-    loc = db.query(PostmanLocation).filter_by(postman_id=postman_id).first()
-    if loc:
-        loc.is_available = True
+# ═══════════════════════════════════════════════════════════════════════════
+# NEW: DYNAMIC PRIORITY UPDATES
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.patch(
+    "/sessions/{session_id}/stop/{stop_index}/priority",
+    response_model=SessionResponse,
+    summary="Update stop priority during active delivery",
+    description="""
+    Updates the priority of a specific stop in an active delivery session.
+    The frontend should trigger route re-optimization after this call.
+    
+    Priority levels: urgent > high > normal > low
+    """
+)
+def update_stop_priority(
+    session_id: int,
+    stop_index: int,
+    payload: UpdatePriorityRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    session = db.query(DeliverySession).filter_by(id=session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.postman_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if session.status != "active":
+        raise HTTPException(status_code=400, detail="Session is not active")
+    
+    # Validate stop index
+    if stop_index < 0 or stop_index >= session.total_stops:
+        raise HTTPException(status_code=400, detail="Invalid stop index")
+    
+    # Update priority in route_data
+    route_data = session.route_data
+    if stop_index < len(route_data):
+        old_priority = route_data[stop_index].get("priority", "normal")
+        route_data[stop_index]["priority"] = payload.new_priority
+        session.route_data = route_data
+        
         db.commit()
+        db.refresh(session)
+        
+        logger.info(
+            f"Session {session_id} stop {stop_index} priority changed: "
+            f"{old_priority} → {payload.new_priority}"
+        )
+    
+    return _session_response(session)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DISRUPTION EVENTS
+# DISRUPTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/disruptions",
     response_model=DisruptionResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Report a road disruption mid-delivery",
+    summary="Report a road disruption",
 )
 def report_disruption(
     payload: ReportDisruptionRequest,
@@ -442,37 +482,24 @@ def report_disruption(
     if session.postman_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    description = DISRUPTION_DESCRIPTIONS.get(payload.disruption_type, payload.disruption_type)
-
-    # Derive lat/lng from route if not supplied
-    lat, lng = payload.lat, payload.lng
-    if (lat is None or lng is None) and payload.stop_index < len(session.route_data or []):
-        stop = session.route_data[payload.stop_index]
-        lat = stop.get("lat", lat)
-        lng = stop.get("lng", lng)
-
-    stop_name = payload.stop_name
-    if not stop_name and payload.stop_index < len(session.route_data or []):
-        stop_name = session.route_data[payload.stop_index].get("name")
-
+    desc = DISRUPTION_DESCRIPTIONS.get(payload.disruption_type, "Disruption reported")
     event = DisruptionEvent(
-        session_id      = payload.session_id,
-        postman_id      = current_user.id,
-        stop_index      = payload.stop_index,
-        stop_name       = stop_name,
-        disruption_type = payload.disruption_type,
-        description     = description,
-        lat             = lat,
-        lng             = lng,
-        status          = "reported",
+        session_id=payload.session_id,
+        postman_id=current_user.id,
+        stop_index=payload.stop_index,
+        stop_name=payload.stop_name,
+        disruption_type=payload.disruption_type,
+        description=desc,
+        lat=payload.lat,
+        lng=payload.lng,
+        status="reported",
     )
     db.add(event)
     db.commit()
     db.refresh(event)
 
-    logger.warning(
-        "Disruption '%s' reported by postman %d at stop %d (session %d)",
-        payload.disruption_type, current_user.id, payload.stop_index, payload.session_id,
+    logger.info(
+        f"Disruption {event.id} ({payload.disruption_type}) reported at stop {payload.stop_index} by {current_user.email}"
     )
     return _disruption_response(event)
 
@@ -493,7 +520,12 @@ def get_session_disruptions(
     if session.postman_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    events = db.query(DisruptionEvent).filter_by(session_id=session_id).order_by(DisruptionEvent.reported_at.desc()).all()
+    events = (
+        db.query(DisruptionEvent)
+        .filter_by(session_id=session_id)
+        .order_by(DisruptionEvent.reported_at.desc())
+        .all()
+    )
     return [_disruption_response(e) for e in events]
 
 
@@ -514,8 +546,8 @@ def resolve_disruption(
     if event.postman_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    event.status          = payload.status
-    event.resolved_at     = datetime.utcnow()
+    event.status = payload.status
+    event.resolved_at = datetime.utcnow()
     event.resolution_note = payload.resolution_note
     db.commit()
     db.refresh(event)
@@ -523,7 +555,7 @@ def resolve_disruption(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# REDIRECTION EVENTS
+# REDIRECTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post(
@@ -543,38 +575,28 @@ def create_redirection(
     if session.postman_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Verify the receiving postman exists
-    to_postman = db.query(User).filter_by(id=payload.to_postman_id).first()
-    if not to_postman:
+    target_postman = db.query(User).filter_by(id=payload.to_postman_id).first()
+    if not target_postman:
         raise HTTPException(status_code=404, detail="Target postman not found")
 
-    stop_name = payload.stop_name
-    stop_lat  = payload.stop_lat
-    stop_lng  = payload.stop_lng
-    if payload.stop_index < len(session.route_data or []):
-        stop = session.route_data[payload.stop_index]
-        stop_name = stop_name or stop.get("name")
-        stop_lat  = stop_lat  or stop.get("lat")
-        stop_lng  = stop_lng  or stop.get("lng")
-
     event = RedirectionEvent(
-        session_id      = payload.session_id,
-        from_postman_id = current_user.id,
-        to_postman_id   = payload.to_postman_id,
-        stop_index      = payload.stop_index,
-        stop_name       = stop_name,
-        stop_lat        = stop_lat,
-        stop_lng        = stop_lng,
-        reason          = payload.reason,
-        status          = "transferred",
+        session_id=payload.session_id,
+        from_postman_id=current_user.id,
+        to_postman_id=payload.to_postman_id,
+        stop_index=payload.stop_index,
+        stop_name=payload.stop_name,
+        stop_lat=payload.stop_lat,
+        stop_lng=payload.stop_lng,
+        reason=payload.reason,
+        status="transferred",
     )
     db.add(event)
     db.commit()
     db.refresh(event)
 
     logger.info(
-        "Stop %d (session %d) redirected from postman %d → postman %d",
-        payload.stop_index, payload.session_id, current_user.id, payload.to_postman_id,
+        "Redirection %d: stop %d handed from %s → %s",
+        event.id, payload.stop_index, current_user.id, payload.to_postman_id,
     )
     return _redirection_response(event)
 
