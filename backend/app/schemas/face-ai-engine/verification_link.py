@@ -20,6 +20,7 @@ class VerificationLinkResponse(BaseModel):
     customer_id: int
     status: str
     video_path: Optional[str] = None
+    video_url: Optional[str] = None   # web-servable URL for the submitted video
     created_at: datetime
     completed_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None

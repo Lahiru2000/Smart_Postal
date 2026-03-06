@@ -260,3 +260,56 @@ def compare_faces(video1_path: str, video2_path: str) -> float:
     logger.info(f"Face [ArcFace]: cos_sim={cos_sim:.4f}, score={score:.4f} "
                 f"(frames: {count1} vs {count2})")
     return round(score, 4)
+
+
+# ── Image-based reference support ─────────────────────────────────────────
+
+def get_image_embedding(image_path: str) -> Optional[np.ndarray]:
+    """
+    Extract ArcFace 512-d face embedding from a single image file.
+    Used when the shipment reference is a photo instead of a video.
+    """
+    frame = cv2.imread(image_path)
+    if frame is None:
+        logger.warning(f"Cannot read image: {image_path}")
+        return None
+
+    emb = get_face_embedding(frame)
+    if emb is not None:
+        # L2-normalize for consistency with get_robust_embedding output
+        norm = np.linalg.norm(emb)
+        if norm > 0:
+            emb = emb / norm
+        logger.info(f"Extracted face embedding from image: {image_path}")
+    else:
+        logger.warning(f"No face detected in image: {image_path}")
+    return emb
+
+
+def compare_faces_mixed(image_path: str, video_path: str) -> float:
+    """
+    Compare a reference IMAGE against a live VIDEO.
+    Extracts single embedding from the image, robust multi-frame
+    embedding from the video, then computes similarity.
+
+    Returns:
+        Similarity score 0.0 (definitely different) to 1.0 (definitely same).
+    """
+    ref_emb = get_image_embedding(image_path)
+    live_emb, live_count = get_robust_embedding(video_path)
+
+    if ref_emb is None or live_emb is None:
+        logger.warning(f"Face embedding failed — ref_image: {ref_emb is not None}, "
+                       f"live_video: {live_count} faces")
+        return 0.0
+
+    cos_sim = float(np.dot(ref_emb, live_emb) / (
+        np.linalg.norm(ref_emb) * np.linalg.norm(live_emb)
+    ))
+
+    score = 1.0 / (1.0 + np.exp(-SIGMOID_STEEPNESS * (cos_sim - SIGMOID_MIDPOINT)))
+    score = float(np.clip(score, 0.0, 1.0))
+
+    logger.info(f"Face [ArcFace image→video]: cos_sim={cos_sim:.4f}, score={score:.4f} "
+                f"(ref=image, live={live_count} frames)")
+    return round(score, 4)

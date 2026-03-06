@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Video, VideoOff, Upload, CheckCircle, XCircle, Clock,
-  Camera, StopCircle, RotateCcw, Send, Package, User, AlertTriangle
+  Camera, StopCircle, RotateCcw, Send, Package, User, AlertTriangle,
+  ScanFace, Loader2, Mic, MicOff
 } from 'lucide-react';
-import { getVerificationLinkPublic, submitVerificationVideo, getVerificationResult } from '../services/api';
+import { getVerificationLinkPublic, submitVerificationVideo, submitVerificationScan, getVerificationResult } from '../services/api';
 
 const VerificationCapture = () => {
   const { token } = useParams();
@@ -14,7 +15,7 @@ const VerificationCapture = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  // Mode: 'choose' | 'record' | 'upload' | 'preview' | 'submitting' | 'done' | 'failed'
+  // Mode: 'choose' | 'record' | 'upload' | 'preview' | 'submitting' | 'done' | 'failed' | 'scan'
   const [mode, setMode] = useState('choose');
 
   // Recording state
@@ -22,10 +23,27 @@ const VerificationCapture = () => {
   const [recordedBlob, setRecordedBlob] = useState(null);
   const [recordedUrl, setRecordedUrl] = useState(null);
   const [recordDuration, setRecordDuration] = useState(0);
+  const [recordedAudioBlob, setRecordedAudioBlob] = useState(null); // separate audio track
+  const audioRecorderRef = useRef(null);       // separate audio MediaRecorder
+  const audioChunksRef = useRef([]);            // separate audio chunks
 
   // Upload state
   const [uploadedFile, setUploadedFile] = useState(null);
   const [uploadedUrl, setUploadedUrl] = useState(null);
+
+  // Scan state
+  const [scanStatus, setScanStatus] = useState(''); // '' | 'scanning' | 'analyzing'
+  const [scanResult, setScanResult] = useState(null);
+  const [scanAudioBlob, setScanAudioBlob] = useState(null);
+  const scanMediaRecorderRef = useRef(null);
+  const scanAudioChunksRef = useRef([]);
+
+  // Audio track state
+  const [hasAudioTrack, setHasAudioTrack] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const audioAnimRef = useRef(null);
 
   // Submission
   const [submitError, setSubmitError] = useState('');
@@ -42,6 +60,7 @@ const VerificationCapture = () => {
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
   const fileInputRef = useRef(null);
+  const scanVideoRef = useRef(null);
 
   // ── Fetch link info ────────────────────────────────────
   useEffect(() => {
@@ -76,9 +95,45 @@ const VerificationCapture = () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
-        audio: { echoCancellation: true, noiseSuppression: true },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
+
+      // Validate audio tracks are present and enabled
+      const audioTracks = stream.getAudioTracks();
+      const audioOk = audioTracks.length > 0 && audioTracks[0].enabled;
+      setHasAudioTrack(audioOk);
+
+      if (audioOk) {
+        // Start audio level monitoring for visual feedback
+        // Use a CLONED audio track so the AudioContext doesn't interfere with MediaRecorder
+        try {
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const monitorTrack = audioTracks[0].clone();
+          const monitorStream = new MediaStream([monitorTrack]);
+          const source = audioCtx.createMediaStreamSource(monitorStream);
+          const analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.5;
+          source.connect(analyser);
+          // Do NOT connect to audioCtx.destination — no playback, just analysis
+          audioContextRef.current = audioCtx;
+          analyserRef.current = analyser;
+
+          const updateLevel = () => {
+            if (!analyserRef.current) return;
+            const data = new Uint8Array(analyserRef.current.frequencyBinCount);
+            analyserRef.current.getByteFrequencyData(data);
+            const avg = data.reduce((a, b) => a + b, 0) / data.length;
+            setAudioLevel(Math.min(avg / 128, 1)); // normalize 0-1
+            audioAnimRef.current = requestAnimationFrame(updateLevel);
+          };
+          updateLevel();
+        } catch (e) {
+          console.warn('Audio level monitoring not available:', e);
+        }
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
@@ -89,41 +144,116 @@ const VerificationCapture = () => {
   };
 
   const stopCamera = () => {
+    if (audioAnimRef.current) {
+      cancelAnimationFrame(audioAnimRef.current);
+      audioAnimRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+      analyserRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
+    setHasAudioTrack(false);
+    setAudioLevel(0);
   };
 
   // ── Recording ──────────────────────────────────────────
   const startRecording = () => {
     if (!streamRef.current) return;
-    chunksRef.current = [];
-    setRecordDuration(0);
 
-    const options = { mimeType: 'video/webm;codecs=vp8,opus' };
-    // Fallback if webm not supported
-    let recorder;
-    try {
-      recorder = new MediaRecorder(streamRef.current, options);
-    } catch {
-      recorder = new MediaRecorder(streamRef.current);
+    const audioTracks = streamRef.current.getAudioTracks();
+    const videoTracks = streamRef.current.getVideoTracks();
+
+    // Ensure audio tracks are enabled
+    audioTracks.forEach(t => { t.enabled = true; });
+
+    chunksRef.current = [];
+    audioChunksRef.current = [];
+    setRecordDuration(0);
+    setRecordedAudioBlob(null);
+
+    // ─── Video MediaRecorder (video + audio combined) ───────────────────
+    const recordingStream = new MediaStream([...videoTracks, ...audioTracks]);
+
+    const videoCodecs = [
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9,opus',
+      'video/webm',
+      'video/mp4',
+    ];
+    let selectedVideoMime = '';
+    for (const mime of videoCodecs) {
+      if (MediaRecorder.isTypeSupported(mime)) { selectedVideoMime = mime; break; }
     }
 
-    recorder.ondataavailable = (e) => {
+    let videoRecorder;
+    try {
+      videoRecorder = selectedVideoMime
+        ? new MediaRecorder(recordingStream, { mimeType: selectedVideoMime, videoBitsPerSecond: 2500000 })
+        : new MediaRecorder(recordingStream);
+    } catch {
+      videoRecorder = new MediaRecorder(recordingStream);
+    }
+
+    videoRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) chunksRef.current.push(e.data);
     };
-
-    recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'video/webm' });
+    videoRecorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: videoRecorder.mimeType || 'video/webm' });
+      console.log('[Recording] Video blob size:', blob.size, 'type:', blob.type);
       setRecordedBlob(blob);
       setRecordedUrl(URL.createObjectURL(blob));
-      setMode('preview');
-      stopCamera();
     };
+    mediaRecorderRef.current = videoRecorder;
 
-    mediaRecorderRef.current = recorder;
-    recorder.start(1000); // collect data every second
+    // ─── SEPARATE Audio-only MediaRecorder (GUARANTEED audio capture) ───
+    // This is the key fix: browsers sometimes silently drop audio from
+    // combined video+audio MediaRecorder. Recording audio separately
+    // ensures we always have a voice track.
+    if (audioTracks.length > 0) {
+      const audioOnlyStream = new MediaStream(audioTracks.map(t => t.clone()));
+      const audioCodecs = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+      ];
+      let selectedAudioMime = '';
+      for (const mime of audioCodecs) {
+        if (MediaRecorder.isTypeSupported(mime)) { selectedAudioMime = mime; break; }
+      }
+
+      let audioRecorder;
+      try {
+        audioRecorder = selectedAudioMime
+          ? new MediaRecorder(audioOnlyStream, { mimeType: selectedAudioMime, audioBitsPerSecond: 128000 })
+          : new MediaRecorder(audioOnlyStream);
+      } catch {
+        audioRecorder = new MediaRecorder(audioOnlyStream);
+      }
+      console.log('[Recording] Separate audio recorder MIME:', audioRecorder.mimeType);
+
+      audioRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      audioRecorder.onstop = () => {
+        if (audioChunksRef.current.length > 0) {
+          const audioBlob = new Blob(audioChunksRef.current, {
+            type: audioRecorder.mimeType || 'audio/webm'
+          });
+          console.log('[Recording] Separate audio blob size:', audioBlob.size, 'type:', audioBlob.type);
+          setRecordedAudioBlob(audioBlob);
+        }
+      };
+      audioRecorderRef.current = audioRecorder;
+      audioRecorder.start(500);
+    }
+
+    videoRecorder.start(1000);
     setIsRecording(true);
 
     timerRef.current = setInterval(() => {
@@ -132,14 +262,27 @@ const VerificationCapture = () => {
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
+    if (!isRecording) return;
+    setIsRecording(false);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
     }
+
+    // Stop the separate audio recorder first
+    if (audioRecorderRef.current && audioRecorderRef.current.state !== 'inactive') {
+      audioRecorderRef.current.stop();
+    }
+    // Stop video recorder (its onstop sets the blob & triggers preview)
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+
+    // Transition to preview after a short delay so both onstop handlers fire
+    setTimeout(() => {
+      setMode('preview');
+      stopCamera();
+    }, 200);
   };
 
   // ── File Upload ────────────────────────────────────────
@@ -180,7 +323,8 @@ const VerificationCapture = () => {
         ? new File([recordedBlob], 'verification.webm', { type: recordedBlob.type })
         : uploadedFile;
 
-      await submitVerificationVideo(token, videoFile);
+      // Send separate audio track alongside video (if available)
+      await submitVerificationVideo(token, videoFile, recordedAudioBlob);
       setMode('done');
 
       // Start polling for AI verification result
@@ -213,7 +357,150 @@ const VerificationCapture = () => {
     setUploadedUrl(null);
     setSubmitError('');
     setRecordDuration(0);
+    setScanStatus('');
+    setScanResult(null);
+    setScanAudioBlob(null);
+    setRecordedAudioBlob(null);
     setMode('choose');
+  };
+
+  // ── Live Camera Scan ───────────────────────────────────
+  const startScan = async () => {
+    try {
+      // Request BOTH video AND audio — voice is recorded during face scan
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      streamRef.current = stream;
+      setMode('scan');
+      setScanStatus('scanning');
+      setScanResult(null);
+      setScanAudioBlob(null);
+      setSubmitError('');
+
+      // Start recording audio for voice verification
+      scanAudioChunksRef.current = [];
+      const audioTracks = stream.getAudioTracks();
+      console.log('[Scan] Audio tracks:', audioTracks.length, audioTracks.map(t => `${t.label} enabled=${t.enabled}`));
+      if (audioTracks.length > 0 && audioTracks[0].enabled) {
+        try {
+          // Use cloned tracks so the scan's video element doesn't interfere
+          const clonedAudioTracks = audioTracks.map(t => t.clone());
+          const audioStream = new MediaStream(clonedAudioTracks);
+          // Try codecs in order: opus (webm), then aac (mp4/Safari), then bare fallback
+          const audioCandidates = [
+            'audio/webm;codecs=opus',
+            'audio/webm',
+            'audio/mp4;codecs=aac',
+            'audio/mp4',
+          ];
+          let selectedAudioMime = '';
+          for (const mime of audioCandidates) {
+            if (MediaRecorder.isTypeSupported(mime)) {
+              selectedAudioMime = mime;
+              break;
+            }
+          }
+          console.log('[Scan] Selected audio MIME:', selectedAudioMime || '(browser default)');
+
+          let audioRecorder;
+          const audioRecOptions = {
+            ...(selectedAudioMime ? { mimeType: selectedAudioMime } : {}),
+            audioBitsPerSecond: 128000,
+          };
+          try {
+            audioRecorder = new MediaRecorder(audioStream, audioRecOptions);
+          } catch {
+            audioRecorder = new MediaRecorder(audioStream);
+          }
+          console.log('[Scan] Audio MediaRecorder mimeType:', audioRecorder.mimeType);
+          audioRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) scanAudioChunksRef.current.push(e.data);
+          };
+          scanMediaRecorderRef.current = audioRecorder;
+          audioRecorder.start(500); // collect audio data every 500ms
+        } catch (audioErr) {
+          console.warn('Audio recording during scan failed, proceeding with face-only:', audioErr);
+        }
+      } else {
+        console.warn('No audio track available during scan — voice verification will be skipped.');
+      }
+
+      // Wait for the video element to mount and attach stream
+      setTimeout(() => {
+        if (scanVideoRef.current) {
+          scanVideoRef.current.srcObject = stream;
+        }
+      }, 100);
+
+      // Capture 8 frames over ~3 seconds, then send for AI analysis
+      const snapshots = [];
+      const captureFrame = () => {
+        const video = scanVideoRef.current;
+        if (!video || video.videoWidth === 0) return null;
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', 0.9);
+      };
+
+      // Wait a bit for camera to stabilize
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      for (let i = 0; i < 8; i++) {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        const frame = captureFrame();
+        if (frame) snapshots.push(frame);
+      }
+
+      // Wait extra time for voice recording (need at least 3-5 seconds of speech)
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Stop audio recording
+      let audioBlob = null;
+      if (scanMediaRecorderRef.current && scanMediaRecorderRef.current.state !== 'inactive') {
+        await new Promise((resolve) => {
+          scanMediaRecorderRef.current.onstop = () => {
+            if (scanAudioChunksRef.current.length > 0) {
+              audioBlob = new Blob(scanAudioChunksRef.current, {
+                type: scanMediaRecorderRef.current.mimeType || 'audio/webm'
+              });
+              setScanAudioBlob(audioBlob);
+            }
+            resolve();
+          };
+          scanMediaRecorderRef.current.stop();
+        });
+      }
+
+      if (snapshots.length === 0) {
+        setSubmitError('Could not capture frames from camera. Please try again.');
+        stopCamera();
+        setMode('choose');
+        setScanStatus('');
+        return;
+      }
+
+      // Send to AI (face frames + audio)
+      setScanStatus('analyzing');
+      try {
+        const res = await submitVerificationScan(token, snapshots, audioBlob);
+        setScanResult(res.data);
+        setScanStatus('');
+        stopCamera();
+      } catch (err) {
+        setSubmitError(err.response?.data?.detail || 'Face scan failed. Please try again.');
+        setScanStatus('');
+        stopCamera();
+        setMode('choose');
+      }
+    } catch {
+      setSubmitError('Camera/microphone access denied. Please allow permissions and try again.');
+      setMode('choose');
+    }
   };
 
   // ── Helpers ────────────────────────────────────────────
@@ -402,6 +689,20 @@ const VerificationCapture = () => {
         {/* ── Choose Mode ─────────────────────────────────── */}
         {mode === 'choose' && (
           <div className="space-y-4">
+            {/* Live Camera Scan */}
+            <button onClick={startScan}
+              className="w-full bg-[#1A1A1A] rounded-2xl border border-[#333333] hover:border-green-500/50 p-6 transition-colors group">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 bg-green-500/10 rounded-xl flex items-center justify-center border border-green-500/20 group-hover:bg-green-500/20 transition-colors">
+                  <ScanFace className="w-7 h-7 text-green-400" />
+                </div>
+                <div className="text-left">
+                  <h3 className="text-white font-bold text-lg">Live Face & Voice Scan</h3>
+                  <p className="text-gray-500 text-sm">Open your camera and speak for instant AI face + voice verification</p>
+                </div>
+              </div>
+            </button>
+
             <button onClick={startCamera}
               className="w-full bg-[#1A1A1A] rounded-2xl border border-[#333333] hover:border-cyan-500/50 p-6 transition-colors group">
               <div className="flex items-center gap-4">
@@ -443,11 +744,44 @@ const VerificationCapture = () => {
             <div className="relative rounded-2xl overflow-hidden border border-[#333333] bg-black aspect-video">
               <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
 
-              {/* Recording indicator */}
+              {/* Recording indicator with audio status */}
               {isRecording && (
-                <div className="absolute top-4 left-4 flex items-center gap-2 bg-red-600/90 px-3 py-1.5 rounded-full">
-                  <div className="w-2.5 h-2.5 bg-white rounded-full animate-pulse" />
-                  <span className="text-white text-sm font-bold">{formatTime(recordDuration)}</span>
+                <div className="absolute top-4 left-4 flex items-center gap-3">
+                  <div className="flex items-center gap-2 bg-red-600/90 px-3 py-1.5 rounded-full">
+                    <div className="w-2.5 h-2.5 bg-white rounded-full animate-pulse" />
+                    <span className="text-white text-sm font-bold">{formatTime(recordDuration)}</span>
+                  </div>
+                  {/* Audio level indicator */}
+                  <div className="flex items-center gap-1.5 bg-black/70 px-3 py-1.5 rounded-full">
+                    <Mic className="w-4 h-4 text-green-400" />
+                    <div className="flex items-end gap-0.5 h-4">
+                      {[0.15, 0.3, 0.45, 0.6, 0.8].map((threshold, i) => (
+                        <div
+                          key={i}
+                          className={`w-1 rounded-full transition-all duration-100 ${
+                            audioLevel > threshold ? 'bg-green-400' : 'bg-gray-600'
+                          }`}
+                          style={{ height: `${(i + 1) * 20}%` }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* No-audio warning overlay */}
+              {!hasAudioTrack && !isRecording && (
+                <div className="absolute bottom-4 left-4 right-4 flex items-center gap-2 bg-yellow-600/90 px-3 py-2 rounded-lg">
+                  <MicOff className="w-4 h-4 text-white flex-shrink-0" />
+                  <span className="text-white text-xs font-medium">Microphone not detected — voice will NOT be recorded. Please allow mic permissions.</span>
+                </div>
+              )}
+
+              {/* Audio ready indicator before recording starts */}
+              {hasAudioTrack && !isRecording && (
+                <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-green-600/80 px-3 py-1.5 rounded-full">
+                  <Mic className="w-4 h-4 text-white" />
+                  <span className="text-white text-xs font-medium">Microphone ready</span>
                 </div>
               )}
             </div>
@@ -474,7 +808,7 @@ const VerificationCapture = () => {
             </div>
 
             <p className="text-gray-500 text-xs text-center">
-              Record a short video showing your face and state your name clearly.
+              🎤 Speak clearly — say your <strong>full name</strong>. Both your face and voice are recorded for verification.
             </p>
           </div>
         )}
@@ -521,6 +855,132 @@ const VerificationCapture = () => {
           <div className="flex flex-col items-center justify-center py-16 gap-4">
             <div className="w-16 h-16 border-4 border-[#FFC000] border-t-transparent rounded-full animate-spin" />
             <p className="text-gray-400 font-medium">Uploading your video...</p>
+          </div>
+        )}
+
+        {/* ── Scan Mode ───────────────────────────────────── */}
+        {mode === 'scan' && (
+          <div className="space-y-4">
+            {/* Camera + scanning overlay */}
+            {!scanResult && (
+              <>
+                <div className="relative rounded-2xl overflow-hidden border border-[#333333] bg-black aspect-video">
+                  <video ref={scanVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+
+                  {/* Scanning overlay animation */}
+                  <div className="absolute inset-0 pointer-events-none">
+                    {/* Corner brackets */}
+                    <div className="absolute top-6 left-6 w-12 h-12 border-t-2 border-l-2 border-green-400 rounded-tl-lg" />
+                    <div className="absolute top-6 right-6 w-12 h-12 border-t-2 border-r-2 border-green-400 rounded-tr-lg" />
+                    <div className="absolute bottom-6 left-6 w-12 h-12 border-b-2 border-l-2 border-green-400 rounded-bl-lg" />
+                    <div className="absolute bottom-6 right-6 w-12 h-12 border-b-2 border-r-2 border-green-400 rounded-br-lg" />
+
+                    {/* Scanning line animation */}
+                    {scanStatus === 'scanning' && (
+                      <div className="absolute left-8 right-8 h-0.5 bg-gradient-to-r from-transparent via-green-400 to-transparent animate-[scan_2s_ease-in-out_infinite]" 
+                           style={{ animation: 'scan 2s ease-in-out infinite' }} />
+                    )}
+                  </div>
+
+                  {/* Audio recording indicator */}
+                  {scanStatus === 'scanning' && (
+                    <div className="absolute top-4 right-4 flex items-center gap-1.5 bg-black/70 px-3 py-1.5 rounded-full">
+                      <Mic className="w-4 h-4 text-green-400 animate-pulse" />
+                      <span className="text-green-400 text-xs font-medium">Recording voice</span>
+                    </div>
+                  )}
+
+                  {/* Status badge */}
+                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
+                    <div className={`px-4 py-2 rounded-full flex items-center gap-2 text-sm font-medium ${
+                      scanStatus === 'scanning'
+                        ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                        : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                    }`}>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      {scanStatus === 'scanning' ? 'Scanning face & recording voice...' : 'Analyzing with AI...'}
+                    </div>
+                  </div>
+                </div>
+
+                <button onClick={() => { stopCamera(); handleRetake(); }}
+                  className="w-full px-5 py-3 bg-[#1A1A1A] text-gray-400 border border-[#333333] font-bold rounded-xl hover:bg-[#252525] transition-colors">
+                  Cancel
+                </button>
+              </>
+            )}
+
+            {/* Scan Result */}
+            {scanResult && (
+              <div className="space-y-4">
+                {scanResult.success ? (
+                  <div className={`rounded-2xl border p-5 ${
+                    scanResult.ai_match ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'
+                  }`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        {scanResult.ai_match
+                          ? <CheckCircle className="w-6 h-6 text-green-400" />
+                          : <XCircle className="w-6 h-6 text-red-400" />
+                        }
+                        <span className={`text-lg font-bold ${scanResult.ai_match ? 'text-green-400' : 'text-red-400'}`}>
+                          {scanResult.verdict}
+                        </span>
+                      </div>
+                      <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                        scanResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                        scanResult.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
+                        'bg-red-500/20 text-red-400'
+                      }`}>
+                        {scanResult.confidence}
+                      </span>
+                    </div>
+
+                    <p className="text-gray-400 text-sm mb-3">
+                      Face Score: <span className="text-white font-bold">{scanResult.face_score}%</span>
+                      {scanResult.voice_available && (
+                        <> · Voice Score: <span className="text-white font-bold">{scanResult.voice_score}%</span></>
+                      )}
+                    </p>
+
+                    <div className="w-full bg-[#333333] rounded-full h-2">
+                      <div className={`h-2 rounded-full transition-all duration-500 ${
+                        scanResult.ai_match ? 'bg-green-500' : 'bg-red-500'
+                      }`} style={{ width: `${Math.min(scanResult.face_score, 100)}%` }} />
+                    </div>
+
+                    <p className="text-gray-500 text-xs mt-3">
+                      {scanResult.ai_match
+                        ? 'Your identity has been verified. The courier has been notified.'
+                        : 'Verification did not match. You can try again or use video recording.'
+                      }
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border p-5 bg-yellow-500/10 border-yellow-500/30">
+                    <div className="flex items-center gap-2 mb-2">
+                      <AlertTriangle className="w-6 h-6 text-yellow-400" />
+                      <span className="text-yellow-400 font-bold">Scan Failed</span>
+                    </div>
+                    <p className="text-gray-400 text-sm">{scanResult.error}</p>
+                  </div>
+                )}
+
+                <button onClick={handleRetake}
+                  className="w-full px-5 py-3 bg-[#1A1A1A] text-gray-400 border border-[#333333] font-bold rounded-xl hover:bg-[#252525] transition-colors flex items-center justify-center gap-2">
+                  <RotateCcw className="w-4 h-4" />
+                  Try Again
+                </button>
+              </div>
+            )}
+
+            {/* CSS animation for scanning line */}
+            <style>{`
+              @keyframes scan {
+                0%, 100% { top: 10%; }
+                50% { top: 85%; }
+              }
+            `}</style>
           </div>
         )}
 

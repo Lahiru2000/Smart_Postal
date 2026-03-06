@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def _resolve_reference_video_path(video_url: str) -> str:
     """
-    Convert a shipment's video_url (e.g. '/uploads/shipments/abc.mp4')
+    Convert a shipment's video_url or image_url (e.g. '/uploads/shipments/abc.mp4')
     to an absolute filesystem path.
     """
     app_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
@@ -29,15 +29,21 @@ def run_ai_verification(
     reference_video_url: str,
     live_video_path: str,
     db_session_factory,
+    reference_media_type: str = "video",
+    live_audio_path: str = None,
+    reference_audio_url: str = None,
 ):
     """
-    Background task: compare two videos using the AI engine and store results.
+    Background task: compare reference media with live video using the AI engine.
 
     Args:
         verification_link_id: ID of the VerificationLink record to update
-        reference_video_url: The shipment's video_url (relative URL)
+        reference_video_url: The shipment's video_url or image_url (relative URL)
         live_video_path: Absolute path to the customer's live verification video
         db_session_factory: Callable that returns a new DB session
+        reference_media_type: 'video' or 'image' — determines which AI pipeline to use
+        live_audio_path: Optional absolute path to separate live audio file
+        reference_audio_url: Optional relative URL to separate reference audio file
     """
     db: Session = db_session_factory()
 
@@ -76,12 +82,29 @@ def run_ai_verification(
         logger.info(
             f"Starting AI verification (link {verification_link_id}): "
             f"reference={reference_path} vs live={live_video_path}"
+            f"{' + live_audio=' + live_audio_path if live_audio_path else ''}"
         )
 
-        # Run the AI engine
-        from .ai_model.verifier import verify
+        # Resolve reference audio path if provided
+        reference_audio_path = None
+        if reference_audio_url:
+            reference_audio_path = _resolve_reference_video_path(reference_audio_url)
+            if not os.path.isfile(reference_audio_path):
+                logger.warning(f"Reference audio not found: {reference_audio_path}")
+                reference_audio_path = None
 
-        result = verify(reference_path, live_video_path)
+        # Run the AI engine
+        if reference_media_type == "image":
+            from .ai_model.verifier import verify_mixed
+            logger.info(f"Using image-based verification (face-only, no voice)")
+            result = verify_mixed(reference_path, live_video_path)
+        else:
+            from .ai_model.verifier import verify
+            result = verify(
+                reference_path, live_video_path,
+                live_audio_path=live_audio_path,
+                reference_audio_path=reference_audio_path,
+            )
 
         # Store results
         vlink.ai_match = result["match"]

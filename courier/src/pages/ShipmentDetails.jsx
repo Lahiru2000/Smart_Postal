@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Package, MapPin, User, Phone, Truck, Clock,
   CheckCircle, Box, FileText, Shield, Scale, Tag, Calendar,
-  Copy, CheckCheck, Send, RefreshCw, X, Navigation, ExternalLink, Video, Link2
+  Copy, CheckCheck, Send, RefreshCw, X, Navigation, ExternalLink, Video, Link2, Image, Play
 } from 'lucide-react';
 import { getShipmentById, updateShipment, startVoiceVerification, getVerificationStatus, initiateVideoCall, generateVerificationLink, getVerificationLinkStatus, getVerificationLinks } from '../services/api';
 
@@ -519,8 +519,9 @@ const ShipmentDetails = () => {
           {(shipment.image_url || shipment.video_url) && (
             <div className="bg-[#1A1A1A] rounded-2xl border border-[#333333] p-6">
               <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                <FileText className="w-4 h-4 text-[#FFC000]" />
-                Verification {shipment.media_type === 'video' ? 'Video' : 'Image'}
+                <Image className="w-4 h-4 text-[#FFC000]" />
+                Reference {shipment.media_type === 'video' ? 'Video' : 'Image'}
+                <span className="text-xs text-gray-600 font-normal ml-1">(from shipment creation)</span>
               </h2>
               {shipment.media_type === 'video' && shipment.video_url ? (
                 <video
@@ -531,13 +532,29 @@ const ShipmentDetails = () => {
               ) : shipment.image_url && !shipment.image_url.startsWith('blob:') ? (
                 <img
                   src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${shipment.image_url}`}
-                  alt="Verification"
+                  alt="Reference"
                   className="w-full rounded-xl border border-[#333333] object-cover max-h-48"
                 />
               ) : null}
             </div>
           )}
         </div>
+
+        {/* ═══ Verification Submission Video ═══ */}
+        {latestVerification?.video_url && (
+          <div className="bg-[#1A1A1A] rounded-2xl border border-cyan-500/20 p-6 mb-6 mt-6">
+            <h2 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+              <Play className="w-4 h-4 text-cyan-400" />
+              Customer Verification Video
+              <span className="text-xs text-gray-600 font-normal ml-1">(submitted via verification link)</span>
+            </h2>
+            <video
+              src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${latestVerification.video_url}`}
+              controls
+              className="w-full rounded-xl border border-[#333333] max-h-72 bg-black"
+            />
+          </div>
+        )}
 
         {/* ═══ AI Verification Result Card ═══ */}
         {latestVerification && (latestVerification.verdict || latestVerification.status === 'processing' || latestVerification.status === 'completed') && (

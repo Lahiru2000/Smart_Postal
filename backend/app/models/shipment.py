@@ -30,6 +30,7 @@ class Shipment(Base):
     status = Column(String(50), default="Pending")
     image_url = Column(String(500), nullable=True)   # Verification image path
     video_url = Column(String(500), nullable=True)   # Verification video path
+    audio_url = Column(String(500), nullable=True)   # Separate audio recording path
     media_type = Column(String(20), nullable=True)   # 'image' | 'video' | None
     
     created_at = Column(DateTime, default=datetime.utcnow)

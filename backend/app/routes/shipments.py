@@ -40,6 +40,7 @@ def create_shipment(
         description=shipment.description,
         image_url=shipment.image_url,
         video_url=shipment.video_url,
+        audio_url=shipment.audio_url,
         media_type=shipment.media_type,
         voice_verification_required=shipment.voice_verification_required or False,
         status="Pending"
@@ -118,6 +119,10 @@ def update_shipment(
     if update_data.video_url is not None:
         shipment.video_url = update_data.video_url
 
+    # Audio URL update (separate audio track)
+    if hasattr(update_data, 'audio_url') and update_data.audio_url is not None:
+        shipment.audio_url = update_data.audio_url
+
     # Media type update
     if update_data.media_type is not None:
         shipment.media_type = update_data.media_type
@@ -183,11 +188,12 @@ def delete_shipment(
 async def upload_shipment_media(
     file: UploadFile = File(...),
     media_type: str = Form(...),  # 'image' or 'video'
+    audio_file: UploadFile = File(None),  # optional separate audio track
     current_user: User = Depends(get_current_user),
 ):
     """
-    Upload an image or video file for a shipment.
-    Returns the URL path that can be stored in the shipment record.
+    Upload an image or video file for a shipment, with optional separate audio track.
+    Returns the URL path(s) that can be stored in the shipment record.
     """
     # Validate media type
     if media_type not in ("image", "video"):
@@ -217,6 +223,18 @@ async def upload_shipment_media(
     with open(filepath, "wb") as f:
         f.write(contents)
 
+    # Handle separate audio file if provided
+    audio_url = None
+    if audio_file and audio_file.filename:
+        audio_contents = await audio_file.read()
+        if len(audio_contents) > 1000:  # at least 1KB of real audio
+            audio_ext = audio_file.filename.rsplit(".", 1)[-1] if "." in audio_file.filename else "webm"
+            audio_filename = f"{uuid.uuid4().hex}_audio.{audio_ext}"
+            audio_filepath = os.path.join(SHIPMENT_UPLOAD_DIR, audio_filename)
+            with open(audio_filepath, "wb") as f:
+                f.write(audio_contents)
+            audio_url = f"/uploads/shipments/{audio_filename}"
+
     # Return the public URL
     url = f"/uploads/shipments/{filename}"
-    return {"url": url, "media_type": media_type, "filename": filename}
+    return {"url": url, "media_type": media_type, "filename": filename, "audio_url": audio_url}

@@ -14,6 +14,7 @@ class ShipmentCreate(BaseModel):
     description: Optional[str] = None
     image_url: Optional[str] = None
     video_url: Optional[str] = None
+    audio_url: Optional[str] = None
     media_type: Optional[str] = None
     voice_verification_required: Optional[bool] = False
 
@@ -21,6 +22,7 @@ class ShipmentUpdate(BaseModel):
     status: Optional[str] = None
     image_url: Optional[str] = None
     video_url: Optional[str] = None
+    audio_url: Optional[str] = None
     media_type: Optional[str] = None
     voice_verification_required: Optional[bool] = None
     receiver_name: Optional[str] = None
@@ -48,6 +50,7 @@ class ShipmentResponse(BaseModel):
     status: str
     image_url: Optional[str] = None
     video_url: Optional[str] = None
+    audio_url: Optional[str] = None
     media_type: Optional[str] = None
     voice_verification_required: Optional[bool] = False
     voice_verification_status: Optional[str] = None
