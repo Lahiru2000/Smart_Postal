@@ -130,25 +130,37 @@ export function useLiveAPI() {
                     });
                     data = await res.json();
                   } else if (call.name === 'send_registration_link') {
-                    const phone = (call.args.phone_number || '').replace(/[^0-9+]/g, '');
-                    const regUrl = `${window.location.origin}/register`;
-                    const waText = encodeURIComponent(
-                      `Smart Postal ලියාපදිංචි වීමට මෙම සබැඳිය භාවිතා කරන්න: ${regUrl}`
-                    );
-                    const waLink = `https://wa.me/${phone.startsWith('0') ? '94' + phone.slice(1) : phone}?text=${waText}`;
-                    setNotification({
-                      type: 'registration_link',
-                      phone,
-                      registrationUrl: regUrl,
-                      whatsappLink: waLink,
-                      timestamp: Date.now(),
-                    });
-                    data = {
-                      success: true,
-                      message: `Registration link prepared for ${phone}`,
-                      registration_url: regUrl,
-                      whatsapp_link: waLink,
-                    };
+                    const rawPhone = (call.args.phone_number || '').replace(/[^0-9]/g, '');
+                    // Validate: must be 10 digits starting with 07
+                    const isValid = /^07\d{8}$/.test(rawPhone);
+                    if (!isValid) {
+                      data = {
+                        success: false,
+                        error: 'invalid_phone',
+                        message: `"${call.args.phone_number}" is not a valid Sri Lankan mobile number. Must be 10 digits starting with 07 (e.g. 0771234567).`,
+                      };
+                    } else {
+                      const regUrl = `${window.location.origin}/register`;
+                      const waText = encodeURIComponent(
+                        `Smart Postal ලියාපදිංචි වීමට මෙම සබැඳිය භාවිතා කරන්න: ${regUrl}`
+                      );
+                      const intlPhone = '94' + rawPhone.slice(1);
+                      const waLink = `https://wa.me/${intlPhone}?text=${waText}`;
+                      console.log('[SmartPostal] Registration link toast triggered:', { phone: rawPhone, waLink });
+                      setNotification({
+                        type: 'registration_link',
+                        phone: rawPhone,
+                        registrationUrl: regUrl,
+                        whatsappLink: waLink,
+                        timestamp: Date.now(),
+                      });
+                      data = {
+                        success: true,
+                        message: `Registration link sent to ${rawPhone} via WhatsApp`,
+                        registration_url: regUrl,
+                        whatsapp_link: waLink,
+                      };
+                    }
                   } else {
                     data = { error: `Unknown function: ${call.name}` };
                   }
@@ -221,21 +233,21 @@ export function useLiveAPI() {
             '\n• සාර්ථක: "ඔබේ [tracking_id] පාර්සලයේ බෙදාහැරීම [date] දිනට වෙනස් කළා."' +
             '\n\n═══ ලියාපදිංචි වීම (Registration) ═══' +
             '\n• පරිශීලකයා ලියාපදිංචි වීම ගැන ඇසුවොත්:' +
-            '\n  "Smart Postal සේවාවට ලියාපදිංචි වීම ඉතා පහසුයි. ඔබට අපේ වෙබ් අඩවියට ගොස් Register බොත්තම ඔබන්න.' +
-            '\n   ඔබේ සම්පූර්ණ නම, ඊමේල් ලිපිනය, දුරකථන අංකය, සහ මුරපදයක් ඇතුළත් කරන්න. ඉන්පසු Sign Up බොත්තම ඔබන්න.' +
-            '\n   ලියාපදිංචි වූ පසු Login පිටුවට ගොස් ඔබේ ඊමේල් සහ මුරපදය පාවිචිචි කර ඇතුල් වන්න.' +
-            '\n   ඔබට WhatsApp හරහා ලියාපදිංචි සබැඳිය ලබා ගැනීමට අවශ්‍ය නම්, ඔබේ දුරකථන අංකය මට කියන්න."' +
-            '\n\n═══ දෝෂ හැසිරවීම ═══' +
-            '\n• නොතේරුණොත්: "මට එය පැහැදිලිව ඇසුණේ නැහැ. කරුණාකර නැවත කියන්න පුළුවන්ද?"' +
-            '\n• උදව් කළ නොහැකි නම්: "මට මේ සඳහා ඔබට උදව් කිරීමට අපහසුයි. කරුණාකර රැඳී සිටින්න, මම ඔබව අපගේ පාරිභෝගික සේවා නිලධාරියෙකුට සම්බන්ධ කරන්නම්."' +
-            '\n\n═══ ඇමතුම අවසානය ═══' +
-            '\n• "ස්මාර්ට් තැපැල් සේවාව ඇමතීම ගැන ස්තූතියි. ඔබට සුබ දවසක්!"' +
-            '\n\n═══ වැදගත් නීති ═══' +
-            '\n• tracking result: වාක්‍ය 3-4. අනෙකුත්: වාක්‍ය 1-2.' +
-            '\n• සිංහලෙන් පමණක් — English mix එපා (නම්, ලිපින ඉංග්‍රීසියෙන් ok).' +
-            '\n• දිනය: "2026 මාර්තු 11". මුදල: "රුපියල් 600".' +
-            '\n• formal වචන (පූර්වභාග/අපරභාග) එපා — ස්වභාවිකව කතා කරන්න.' +
-            '\n• තොරතුරු තහවුරු කරන්න — අංකයක් ලැබුණු විට නැවත කියන්න.' +
+            '\n  "Smart Postal සේවාවට ලියාපදිංචි වීම පහසුයි. නම, ඊමේල්, දුරකථන අංකය, මුරපදයක් දී Sign Up ඔබන්න.' +
+            '\n   WhatsApp එකට ලියාපදිංචි link එක යවන්නද? එහෙනම් ඔබේ දුරකථන අංකය කියන්න."' +
+            '\n• දුරකථන අංකය ලැබුණු විට: send_registration_link tool call කරන්න.' +
+            '\n• ශ්‍රී ලංකා අංකය: 07 න් පටන්ගන්නා ඉලක්කම් 10ක අංකයක් (උදා: 0771234567).' +
+            '\n• "සූන්‍ය හත් හත් එක් දෙක තුන් හතර පහ හය හත්" වැනි ආකාරයට කිව්වොත් ඉලක්කම් 10ට ඒකතු කරන්න.' +
+            '\n• අංකය 07 න් පටන් නොගත්තොත් හෝ ඉලක්කම් 10ක් නැත්නම්: "කරුණාකර 07 න් පටන්ගන්නා ඉලක්කම් 10ක දුරකථන අංකයක් කියන්න." කියන්න.' +
+            '\n• tool success ලැබුණු පසු: "ලියාපදිංචි සබැඳිය ඔබේ WhatsApp එකට යැව්වා!" කියන්න.' +
+            '\n• tool error (invalid_phone) ලැබුණොත්: "කණගාටුයි, එය වලංගු අංකයක් නොවේ. 07 න් පටන්ගන්නා ඉලක්කම් 10ක අංකයක් කියන්න." කියන්න.' +
+            '\n\n═══ දෝෂ / ඇමතුම අවසානය ═══' +
+            '\n• නොතේරුණොත්: "මට එය පැහැදිලිව ඇසුණේ නැහැ. කරුණාකර නැවත කියන්න."' +
+            '\n• අවසානය: "ස්මාර්ට් තැපැල් සේවාව ඇමතීම ගැන ස්තූතියි. සුබ දවසක්!"' +
+            '\n\n═══ නීති ═══' +
+            '\n• කෙටි පිළිතුරු: tracking=වාක්‍ය 3, අනෙකුත්=වාක්‍ය 1-2. දිගු පිළිතුරු දෙන්න එපා.' +
+            '\n• සිංහලෙන් පමණක්. දිනය: "මාර්තු 11". මුදල: "රුපියල් 600".' +
+            '\n• ස්වභාවිකව, කෙටියෙන් — formal එපා, වාචික ලෙස කතා කරන්න.' +
             '\n• අද: ' + new Date().toISOString().split('T')[0],
           tools: [
             {
@@ -284,14 +296,16 @@ export function useLiveAPI() {
                 {
                   name: 'send_registration_link',
                   description:
-                    'Send a Smart Postal registration link to the user via WhatsApp. ' +
-                    'Call this when the user wants to receive a registration link on their phone.',
+                    'Send a Smart Postal registration link via WhatsApp to a Sri Lankan mobile number. ' +
+                    'The phone number MUST be exactly 10 digits starting with 07. ' +
+                    'Convert spoken digits to a single number string (e.g. "zero seven seven one two three four five six seven" → "0771234567"). ' +
+                    'Call this only after the user provides their phone number for registration.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
                       phone_number: {
                         type: 'STRING',
-                        description: 'Sri Lankan phone number (e.g. 0771234567 or +94771234567)',
+                        description: 'Exactly 10-digit Sri Lankan mobile number starting with 07 (e.g. 0771234567). No spaces or dashes.',
                       },
                     },
                     required: ['phone_number'],
