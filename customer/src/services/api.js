@@ -81,6 +81,7 @@ export const submitVerificationVideo = (token, videoFile) => {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
 };
+export const getVerificationResult = (token) => api.get(`/verification-link/result/${token}`);
 
 // Customer – check for pending verification link on a shipment
 export const getCustomerVerificationLink = (shipmentId) =>
@@ -97,5 +98,8 @@ export const postAssistantVoiceQuery = (audioFile) => {
   });
 };
 export const resetAssistantConversation = () => api.post('/assistant/reset-conversation');
+
+// Verification Links for a shipment (authenticated)
+export const getVerificationLinks = (shipmentId) => api.get(`/verification-link/shipment/${shipmentId}`);
 
 export default api;
