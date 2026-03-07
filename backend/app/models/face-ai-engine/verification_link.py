@@ -36,6 +36,11 @@ class VerificationLink(Base):
     voice_available = Column(Boolean, nullable=True)       # was audio usable?
     ai_error = Column(Text, nullable=True)                 # error message if AI failed
 
+    # ── Liveness detection results ──────────────────────────────────────
+    liveness_passed = Column(Boolean, nullable=True)       # True = live person detected
+    liveness_score = Column(Float, nullable=True)          # 0.0–1.0 combined liveness score
+    liveness_confidence = Column(String(20), nullable=True) # HIGH | MEDIUM | LOW
+
     # ── Delivery preference (set by customer after successful verification) ──
     delivery_preference = Column(String(30), nullable=True)  # deliver_to_neighbor | place_in_locker | return_order
     delivery_message = Column(Text, nullable=True)           # optional note from customer

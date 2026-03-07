@@ -91,12 +91,15 @@ export const submitVerificationVideo = (token, videoFile, audioBlob = null) => {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
 };
-export const submitVerificationScan = (token, snapshots, audioBlob = null) => {
+export const submitVerificationScan = (token, snapshots, audioBlob = null, livenessData = null) => {
   const formData = new FormData();
   formData.append('scan_data', JSON.stringify({ snapshots }));
   if (audioBlob) {
     const audioFile = new File([audioBlob], 'voice_scan.webm', { type: audioBlob.type || 'audio/webm' });
     formData.append('audio', audioFile);
+  }
+  if (livenessData) {
+    formData.append('liveness_data', JSON.stringify(livenessData));
   }
   return api.post(`/verification-link/public/${token}/scan`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
