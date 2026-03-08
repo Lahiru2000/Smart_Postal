@@ -335,7 +335,7 @@ const RouteOptimizer = () => {
   const [showMap, setShowMap] = useState(false);
   const [locationCount, setLocationCount] = useState(5);
   const [routeResults, setRouteResults] = useState(null);
-  const [baseRouteMetrics, setBaseRouteMetrics] = useState(null); // Store non-optimized route metrics
+  const [baseRouteMetrics, setBaseRouteMetrics] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [optimizing, setOptimizing] = useState(false);
   const [error, setError] = useState(null);
@@ -369,7 +369,7 @@ const RouteOptimizer = () => {
 
   // ── Feature: Dynamic Re-routing ──
   const [deliveryMode, setDeliveryMode] = useState(false);
-  const [sessionId, setSessionId] = useState(null); // ← persisted backend ID
+  const [sessionId, setSessionId] = useState(null);
   const [currentStopIdx, setCurrentStopIdx] = useState(0);
   const [completedStops, setCompletedStops] = useState(new Set());
   const [disruptions, setDisruptions] = useState([]);
@@ -386,7 +386,7 @@ const RouteOptimizer = () => {
   const [redirectionLog, setRedirectionLog] = useState([]);
   const [showRedirectionLog, setShowRedirectionLog] = useState(false);
 
-  // ── Feature: Dynamic Priority Updates (NEW) ──
+  // ── Feature: Dynamic Priority Updates ──
   const [priorityUpdateMode, setPriorityUpdateMode] = useState(false);
   const [startPoint, setStartPoint] = useState(null);
   const [rerouteTrigger, setRerouteTrigger] = useState(0);
@@ -394,19 +394,17 @@ const RouteOptimizer = () => {
 
   // ── Refs ──
   const mapRef = useRef(null);
-  const gpsWatchRef = useRef(null); // Geolocation watchPosition ID
+  const gpsWatchRef = useRef(null);
   const trafficIntervalRef = useRef(null);
   const searchInputRef = useRef(null);
   const markersRef = useRef([]);
-  const polylineRefs = useRef([]); // priority-colored route segments
+  const polylineRefs = useRef([]);
 
   useEffect(() => {
     markersRef.current = markers;
   }, [markers]);
 
   // ─── GPS BROADCASTING ───────────────────────────────────────────────────
-  // Broadcasts postman position to backend every time the browser fires a
-  // location update (typically every 5-15 s depending on device).
   useEffect(() => {
     if (!navigator.geolocation) return;
     gpsWatchRef.current = navigator.geolocation.watchPosition(
@@ -419,9 +417,7 @@ const RouteOptimizer = () => {
           heading: heading ?? undefined,
           speed_kmh: speed != null ? speed * 3.6 : undefined,
           is_available: !deliveryMode,
-        }).catch(() => {
-          /* silently swallow — non-critical */
-        });
+        }).catch(() => {});
       },
       (err) => console.warn("GPS error:", err.message),
       { enableHighAccuracy: true, maximumAge: 10_000 },
@@ -433,7 +429,6 @@ const RouteOptimizer = () => {
   }, [deliveryMode]);
 
   // ─── AUTO TRAFFIC REFRESH DURING DELIVERY ──────────────────────────────
-  // Re-fetches traffic data every 5 minutes while a delivery is active.
   useEffect(() => {
     if (deliveryMode && routeResults) {
       trafficIntervalRef.current = setInterval(
@@ -512,7 +507,7 @@ const RouteOptimizer = () => {
       const renderer = new window.google.maps.DirectionsRenderer({
         map: newMap,
         suppressMarkers: true,
-        suppressPolylines: true, // we draw per-leg priority-coloured lines ourselves
+        suppressPolylines: true,
       });
       setDirectionsRenderer(renderer);
       newMap.addListener("click", (e) => handleMapClick(e, newMap));
@@ -644,7 +639,6 @@ const RouteOptimizer = () => {
       const updated = prev.map((m, i) =>
         i === index ? { ...m, priority } : m,
       );
-      // Recolor the map marker immediately to reflect the new priority
       const target = updated[index];
       if (target?.marker && window.google) {
         target.marker.setIcon({
@@ -660,17 +654,8 @@ const RouteOptimizer = () => {
     });
 
   // ─── PRIORITY + NEAREST-NEIGHBOR SORT ────────────────────────────────────
-  // Groups stops by priority tier (Urgent→High→Normal→Low), then within each
-  // tier orders them by nearest-neighbor so the path between same-priority
-  // stops is always the shortest possible chain.
-  //
-  // @param  stops      - array of {lat, lng, priority, ...}
-  // @param  startFrom  - {lat, lng} the position we start travelling FROM
-  // @returns           - flat ordered array (all tiers stitched together)
   const priorityNearestNeighborSort = (stops, startFrom) => {
     const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
-
-    // Bucket stops by priority tier
     const buckets = {};
     PRIORITY_ORDER.forEach((p) => (buckets[p] = []));
     stops.forEach((s) => {
@@ -679,12 +664,11 @@ const RouteOptimizer = () => {
     });
 
     const result = [];
-    let cursor = startFrom; // track where we are after each stop
+    let cursor = startFrom;
 
     PRIORITY_ORDER.forEach((tier) => {
       const pool = [...buckets[tier]];
       while (pool.length > 0) {
-        // Find the nearest stop to our current position
         let nearestIdx = 0;
         let nearestDist = Infinity;
         pool.forEach((stop, i) => {
@@ -696,7 +680,7 @@ const RouteOptimizer = () => {
         });
         const chosen = pool.splice(nearestIdx, 1)[0];
         result.push(chosen);
-        cursor = chosen; // advance cursor
+        cursor = chosen;
       }
     });
 
@@ -722,7 +706,7 @@ const RouteOptimizer = () => {
 
       const directionsService = new window.google.maps.DirectionsService();
 
-      // ────── STEP 1: Calculate BASE route (original order) ──────
+      // ── STEP 1: BASE route (original order) ──
       const baseOrigin = allLocations[0];
       const baseDestination = allLocations[allLocations.length - 1];
       const baseWaypoints = allLocations.slice(1, -1);
@@ -745,7 +729,6 @@ const RouteOptimizer = () => {
         },
       };
 
-      // Calculate base route metrics
       directionsService.route(baseRequest, (baseResult, baseStatus) => {
         if (baseStatus === "OK") {
           let baseTotalDuration = 0,
@@ -761,12 +744,8 @@ const RouteOptimizer = () => {
         }
       });
 
-      // ────── STEP 2: Calculate OPTIMIZED route ──────
-      // Always apply priority + nearest-neighbor sort:
-      //   Urgent stops first (nearest-neighbor within group),
-      //   then High, Normal, Low — each group chained from
-      //   where the previous group ended.
-      const startFrom = allLocations[0]; // use first pin as departure point
+      // ── STEP 2: OPTIMIZED route ──
+      const startFrom = allLocations[0];
       const sorted = priorityNearestNeighborSort(allLocations, startFrom);
 
       const origin = sorted[0];
@@ -783,7 +762,7 @@ const RouteOptimizer = () => {
           location: new window.google.maps.LatLng(w.lat, w.lng),
           stopover: true,
         })),
-        optimizeWaypoints: false, // order already determined by our algorithm
+        optimizeWaypoints: false,
         travelMode: "DRIVING",
         drivingOptions: {
           departureTime: new Date(),
@@ -808,9 +787,7 @@ const RouteOptimizer = () => {
           totalDistance += leg.distance.value;
         });
 
-        // `sorted` IS the optimized route — priority + proximity ordered
         const optimizedRoute = sorted;
-
         const googleMapsUrl = `https://www.google.com/maps/dir/${optimizedRoute
           .map((l) => `${l.lat},${l.lng}`)
           .join("/")}`;
@@ -823,10 +800,8 @@ const RouteOptimizer = () => {
           legs: result.routes[0].legs,
         });
 
-        // Draw one coloured segment per leg (colour = destination stop priority)
         drawPriorityPolylines(result, optimizedRoute);
 
-        // Re-draw markers: number = delivery order, colour = priority tier
         markers.forEach((m) => m.marker.setMap(null));
         const newMarkers = optimizedRoute.map((loc, i) => {
           const marker = new window.google.maps.Marker({
@@ -992,7 +967,6 @@ const RouteOptimizer = () => {
   };
 
   // ─── PRIORITY-COLOURED ROUTE POLYLINES ───────────────────────────────────
-  // Draws one polyline per leg, coloured by the destination stop's priority.
   const clearPriorityPolylines = () => {
     polylineRefs.current.forEach((p) => p.setMap(null));
     polylineRefs.current = [];
@@ -1003,18 +977,15 @@ const RouteOptimizer = () => {
     if (!map || !window.google) return;
 
     directionsResult.routes[0].legs.forEach((leg, legIndex) => {
-      // The stop we are heading TO in this leg
       const destStop = route[legIndex + 1] || route[route.length - 1];
       const priority = destStop?.priority || "normal";
       const color = getPriorityMarkerColor(priority);
 
-      // Collect every lat/lng point across all steps in the leg
       const path = [];
       leg.steps.forEach((step) => {
         (step.path || []).forEach((pt) => path.push(pt));
       });
 
-      // Thin dark shadow for readability, then the priority-coloured line on top
       [
         { color: "#000000", weight: 8, opacity: 0.25 },
         { color, weight: 5, opacity: 0.9 },
@@ -1025,7 +996,7 @@ const RouteOptimizer = () => {
           strokeWeight: weight,
           strokeOpacity: opacity,
           map,
-          zIndex: weight, // thinner line renders on top
+          zIndex: weight,
         });
         polylineRefs.current.push(pl);
       });
@@ -1147,7 +1118,7 @@ const RouteOptimizer = () => {
           location: new window.google.maps.LatLng(w.lat, w.lng),
           stopover: true,
         })),
-        optimizeWaypoints: false, // keep current order
+        optimizeWaypoints: false,
         travelMode: "DRIVING",
         drivingOptions: {
           departureTime: new Date(),
@@ -1163,7 +1134,7 @@ const RouteOptimizer = () => {
         }
 
         const legs = result.routes[0].legs.map((leg) => {
-          const baseDuration = leg.duration.value; // seconds without traffic
+          const baseDuration = leg.duration.value;
           const trafficDuration =
             leg.duration_in_traffic?.value || baseDuration;
           const delaySeconds = Math.max(0, trafficDuration - baseDuration);
@@ -1183,7 +1154,6 @@ const RouteOptimizer = () => {
           };
         });
 
-        // Update renderer with fresh traffic-aware directions
         if (directionsRenderer) {
           directionsRenderer.setDirections(result);
           drawPriorityPolylines(result, routeResults.optimizedRoute);
@@ -1196,7 +1166,6 @@ const RouteOptimizer = () => {
         setTrafficLegs(legs);
         setLastTrafficRefresh(new Date());
         setShowTrafficPanel(true);
-        // Update total duration live
         setRouteResults((prev) => ({
           ...prev,
           totalDuration: totalTrafficDuration,
@@ -1236,7 +1205,6 @@ const RouteOptimizer = () => {
   const startDelivery = async () => {
     if (!routeResults) return;
 
-    // NEW: Capture start location
     let capturedStartPoint = null;
     if (navigator.geolocation) {
       try {
@@ -1251,7 +1219,6 @@ const RouteOptimizer = () => {
         setStartPoint(capturedStartPoint);
       } catch (error) {
         console.warn("Could not get start location:", error);
-        // Fallback to first route point
         capturedStartPoint = {
           lat: routeResults.optimizedRoute[0].lat,
           lng: routeResults.optimizedRoute[0].lng,
@@ -1267,7 +1234,7 @@ const RouteOptimizer = () => {
         google_maps_url: routeResults.googleMapsUrl,
         total_distance_m: routeResults.totalDistance,
         total_duration_s: routeResults.totalDuration,
-        start_location: capturedStartPoint, // NEW: Include start location
+        start_location: capturedStartPoint,
       });
       setSessionId(data.id);
       setDeliveryMode(true);
@@ -1276,7 +1243,6 @@ const RouteOptimizer = () => {
       setDisruptions([]);
       setRerouteResult(null);
       setRedirectionLog([]);
-      // Fetch postmen near the centroid of the route
       fetchNearbyPostmen(routeResults.optimizedRoute);
     } catch (err) {
       console.error("Failed to start session:", err);
@@ -1290,7 +1256,6 @@ const RouteOptimizer = () => {
       const { data } = await completeStop(sessionId, idx);
       setCompletedStops(new Set(data.completed_stops));
       setCurrentStopIdx(data.current_stop_idx);
-      // Update marker icon to green on map
       const m = markers[idx];
       if (m?.marker) {
         m.marker.setIcon({
@@ -1308,10 +1273,44 @@ const RouteOptimizer = () => {
     }
   };
 
+  // ─── reportDisruption ────────────────────────────────────────────────────
+  // FIX 1: Compute `newCurrentStopIdx` synchronously (before any setState call)
+  //         so rerouteAroundDisruption receives the correct "from" index rather
+  //         than the stale closure value.
+  // FIX 2: Immediately grey-out the disrupted stop's map marker so the UI
+  //         makes it visually clear that stop has been skipped.
   const reportDisruption = async (stopIndex, type) => {
     if (!sessionId) return;
     setShowDisruptionModal(false);
     setDisruptionTarget(null);
+
+    // ── Compute the next active stop index RIGHT NOW (synchronous) ──
+    // setCurrentStopIdx is async; rerouteAroundDisruption runs in the same
+    // tick and would read the stale value if we don't pass it explicitly.
+    let newCurrentStopIdx = currentStopIdx;
+    if (stopIndex === currentStopIdx && routeResults?.optimizedRoute) {
+      const totalStops = routeResults.optimizedRoute.length;
+      let next = stopIndex + 1;
+      while (next < totalStops && completedStops.has(next)) next++;
+      if (next < totalStops) {
+        newCurrentStopIdx = next;
+        setCurrentStopIdx(next);
+      }
+    }
+
+    // ── Grey-out the disrupted stop marker immediately ──
+    const disruptedMarker = markers[stopIndex];
+    if (disruptedMarker?.marker && window.google) {
+      disruptedMarker.marker.setIcon({
+        path: window.google.maps.SymbolPath.CIRCLE,
+        scale: 14,
+        fillColor: "#6B7280", // grey = skipped
+        fillOpacity: 0.5,
+        strokeColor: "#EF4444", // red border = disrupted
+        strokeWeight: 2,
+      });
+    }
+
     try {
       const { data } = await apiReportDisruption({
         session_id: sessionId,
@@ -1329,27 +1328,37 @@ const RouteOptimizer = () => {
           status: data.status,
         },
       ]);
-      rerouteAroundDisruption(stopIndex, { type });
+      rerouteAroundDisruption(stopIndex, { type }, newCurrentStopIdx);
     } catch (err) {
       console.error("Failed to report disruption:", err);
       setError("Disruption could not be saved. Re-routing locally.");
-      rerouteAroundDisruption(stopIndex, { type }); // still re-route locally
+      rerouteAroundDisruption(stopIndex, { type }, newCurrentStopIdx);
     }
   };
 
-  const rerouteAroundDisruption = async (skippedStopIdx, disruption) => {
+  // ─── rerouteAroundDisruption ─────────────────────────────────────────────
+  // FIX 3: Accept explicit `fromIdx` so the remaining-stops filter always uses
+  //         the freshly-computed index rather than the stale closure value.
+  // FIX 4: Always clear old polylines even on early-return (e.g. ≤1 stop left)
+  //         so the map never shows a path that leads to a skipped stop.
+  const rerouteAroundDisruption = async (
+    skippedStopIdx,
+    disruption,
+    fromIdx = currentStopIdx,
+  ) => {
     if (!routeResults || !window.google) return;
     setRerouteLoading(true);
 
     const { optimizedRoute } = routeResults;
 
-    // Build remaining route excluding disrupted stop and already-completed stops
     const remaining = optimizedRoute.filter(
-      (_, i) =>
-        i !== skippedStopIdx && !completedStops.has(i) && i >= currentStopIdx,
+      (_, i) => i !== skippedStopIdx && !completedStops.has(i) && i >= fromIdx,
     );
 
     if (remaining.length < 2) {
+      // Clear stale polylines so no path leads to the now-skipped stop
+      clearPriorityPolylines();
+      if (directionsRenderer) directionsRenderer.setDirections({ routes: [] });
       setRerouteLoading(false);
       return;
     }
@@ -1377,8 +1386,8 @@ const RouteOptimizer = () => {
 
     directionsService.route(request, (result, status) => {
       if (status === "OK") {
-        directionsRenderer.setDirections(result);
         drawPriorityPolylines(result, remaining);
+
         let rerouteDuration = 0,
           rerouteDistance = 0;
         result.routes[0].legs.forEach((leg) => {
@@ -1386,6 +1395,89 @@ const RouteOptimizer = () => {
             leg.duration_in_traffic?.value || leg.duration.value;
           rerouteDistance += leg.distance.value;
         });
+
+        // ── Rebuild ALL markers so numbers are sequential on the new route ──
+        // Hide every existing marker first (including the disrupted one which
+        // is already grey — we leave it hidden so it doesn't confuse the path).
+        markers.forEach((m) => m.marker?.setMap(null));
+
+        // Build a lookup of original-index → remaining-order (1-based)
+        const remainingIndices = new Set(
+          optimizedRoute
+            .map((_, i) => i)
+            .filter(
+              (i) =>
+                i !== skippedStopIdx && !completedStops.has(i) && i >= fromIdx,
+            ),
+        );
+
+        const newMarkers = optimizedRoute.map((loc, originalIdx) => {
+          const isSkipped = originalIdx === skippedStopIdx;
+          const isCompleted = completedStops.has(originalIdx);
+
+          // Compute the display order within the remaining route
+          const orderInRemaining =
+            remaining.findIndex((r) => r.lat === loc.lat && r.lng === loc.lng) +
+            1;
+
+          let fillColor, label, opacity;
+          if (isCompleted) {
+            fillColor = "#22C55E"; // green — delivered
+            label = "✓";
+            opacity = 0.5;
+          } else if (isSkipped) {
+            fillColor = "#6B7280"; // grey — skipped
+            label = "✕";
+            opacity = 0.5;
+          } else if (remainingIndices.has(originalIdx)) {
+            fillColor = getPriorityMarkerColor(loc.priority);
+            label = String(orderInRemaining);
+            opacity = 1;
+          } else {
+            // past stop not in remaining (shouldn't happen, but safe fallback)
+            fillColor = "#6B7280";
+            label = "-";
+            opacity = 0.4;
+          }
+
+          const marker = new window.google.maps.Marker({
+            position: { lat: loc.lat, lng: loc.lng },
+            map,
+            label: {
+              text: label,
+              color: isSkipped || isCompleted ? "#fff" : "#000",
+              fontWeight: "bold",
+              fontSize: "11px",
+            },
+            icon: {
+              path: window.google.maps.SymbolPath.CIRCLE,
+              scale: isSkipped ? 12 : 14,
+              fillColor,
+              fillOpacity: opacity,
+              strokeColor: isSkipped ? "#EF4444" : "#000",
+              strokeWeight: 2,
+            },
+            zIndex: isSkipped ? 0 : 10,
+          });
+
+          return {
+            marker,
+            name: loc.name,
+            lat: loc.lat,
+            lng: loc.lng,
+            priority: loc.priority,
+          };
+        });
+
+        setMarkers(newMarkers);
+
+        // ── Fit map to the new active route so the path is fully visible ──
+        const bounds = new window.google.maps.LatLngBounds();
+        remaining.forEach((loc) =>
+          bounds.extend({ lat: loc.lat, lng: loc.lng }),
+        );
+        map.fitBounds(bounds, { top: 60, right: 40, bottom: 60, left: 40 });
+
         setRerouteResult({
           skippedStop: optimizedRoute[skippedStopIdx],
           newRoute: remaining,
@@ -1416,27 +1508,23 @@ const RouteOptimizer = () => {
     setRerouteResult(null);
     setShowRedirectPanel(null);
     setRedirectionLog([]);
-    setPriorityUpdateMode(false); // NEW
-    setStartPoint(null); // NEW
+    setPriorityUpdateMode(false);
+    setStartPoint(null);
   };
 
   // ══════════════════════════════════════════════════════════════════════════
   // ║  NEW FEATURE — DYNAMIC PRIORITY UPDATES
   // ══════════════════════════════════════════════════════════════════════════
-
-  // Change priority of a stop during active delivery
   const changePriority = async (stopIndex, newPriority) => {
     if (!sessionId) return;
 
     try {
-      // Update priority on server
       const { data } = await updateStopPriority(
         sessionId,
         stopIndex,
         newPriority,
       );
 
-      // Update local route data
       if (routeResults?.optimizedRoute) {
         const updatedRoute = routeResults.optimizedRoute.map((stop, idx) =>
           idx === stopIndex ? { ...stop, priority: newPriority } : stop,
@@ -1447,7 +1535,6 @@ const RouteOptimizer = () => {
           optimizedRoute: updatedRoute,
         }));
 
-        // Trigger automatic re-routing
         await rerouteWithNewPriorities(updatedRoute);
       }
 
@@ -1458,14 +1545,11 @@ const RouteOptimizer = () => {
     }
   };
 
-  // Re-optimize route based on new priorities
   const rerouteWithNewPriorities = async (updatedRoute) => {
     if (!updatedRoute || !window.google) return;
 
     setRerouteLoading(true);
-    console.log("🔄 Re-calculating route based on new priorities...");
 
-    // Filter out completed stops, keep from current position onward
     const remaining = updatedRoute.filter(
       (stop, idx) => !completedStops.has(idx) && idx >= currentStopIdx,
     );
@@ -1475,8 +1559,6 @@ const RouteOptimizer = () => {
       return;
     }
 
-    // Re-sort remaining stops: priority tiers + nearest-neighbor within each tier
-    // Start from the current stop (first in remaining array)
     const startFrom = remaining[0];
     const prioritySorted = priorityNearestNeighborSort(remaining, startFrom);
 
@@ -1495,10 +1577,44 @@ const RouteOptimizer = () => {
         location: new window.google.maps.LatLng(w.lat, w.lng),
         stopover: true,
       })),
-      optimizeWaypoints: false, // already ordered by our algorithm
+      optimizeWaypoints: false,
       travelMode: "DRIVING",
       drivingOptions: { departureTime: new Date(), trafficModel: "bestguess" },
     };
+
+    const baseOrigin = remaining[0];
+    const baseDestination = remaining[remaining.length - 1];
+    const baseWaypoints = remaining.slice(1, -1);
+
+    const baseRequest = {
+      origin: new window.google.maps.LatLng(baseOrigin.lat, baseOrigin.lng),
+      destination: new window.google.maps.LatLng(
+        baseDestination.lat,
+        baseDestination.lng,
+      ),
+      waypoints: baseWaypoints.map((w) => ({
+        location: new window.google.maps.LatLng(w.lat, w.lng),
+        stopover: true,
+      })),
+      optimizeWaypoints: false,
+      travelMode: "DRIVING",
+      drivingOptions: { departureTime: new Date(), trafficModel: "bestguess" },
+    };
+
+    directionsService.route(baseRequest, (baseResult, baseStatus) => {
+      if (baseStatus === "OK") {
+        let baseDuration = 0,
+          baseDistance = 0;
+        baseResult.routes[0].legs.forEach((leg) => {
+          baseDuration += leg.duration.value;
+          baseDistance += leg.distance.value;
+        });
+        setBaseRouteMetrics({
+          totalDuration: baseDuration,
+          totalDistance: baseDistance,
+        });
+      }
+    });
 
     directionsService.route(request, (result, status) => {
       if (status === "OK") {
@@ -1512,7 +1628,6 @@ const RouteOptimizer = () => {
           newDistance += leg.distance.value;
         });
 
-        // Update route results with new optimized order
         setRouteResults((prev) => ({
           ...prev,
           optimizedRoute: prioritySorted,
@@ -1521,7 +1636,6 @@ const RouteOptimizer = () => {
           legs: result.routes[0].legs,
         }));
 
-        // Redraw markers: number = new delivery order, colour = priority
         markers.forEach((m) => m.marker?.setMap(null));
         const newMarkers = prioritySorted.map((loc, i) => {
           const marker = new window.google.maps.Marker({
@@ -1556,7 +1670,6 @@ const RouteOptimizer = () => {
     });
   };
 
-  // Create start point marker
   const createStartPointMarker = (startLoc) => {
     if (!map || !startLoc) return null;
 
@@ -1572,20 +1685,19 @@ const RouteOptimizer = () => {
       icon: {
         path: window.google.maps.SymbolPath.CIRCLE,
         scale: 18,
-        fillColor: "#10B981", // Green
+        fillColor: "#10B981",
         fillOpacity: 1,
         strokeColor: "#FFF",
         strokeWeight: 3,
       },
       title: "Delivery Start Point",
-      zIndex: 1000, // Always on top
+      zIndex: 1000,
     });
 
     setStartMarker(marker);
     return marker;
   };
 
-  // useEffect to create start marker when delivery mode starts
   useEffect(() => {
     if (deliveryMode && startPoint && map && !startMarker) {
       createStartPointMarker(startPoint);
@@ -1601,7 +1713,6 @@ const RouteOptimizer = () => {
   // ══════════════════════════════════════════════════════════════════════════
   // ║  FEATURE 3 — INTER-POSTMAN REDIRECTION
   // ══════════════════════════════════════════════════════════════════════════
-  // ── REAL: Fetch nearby postmen from API ───────────────────────────────
   const fetchNearbyPostmen = async (route) => {
     if (!route?.length) return;
     setLoadingNearby(true);
@@ -1681,7 +1792,6 @@ const RouteOptimizer = () => {
       setRedirectionLog((prev) => [event, ...prev]);
       setShowRedirectPanel(null);
 
-      // Update marker to purple on map
       const m = markers[stopIndex];
       if (m?.marker) {
         m.marker.setIcon({
@@ -1730,13 +1840,7 @@ const RouteOptimizer = () => {
                 <h1 className="text-3xl font-bold text-white tracking-tight">
                   Route Optimizer
                 </h1>
-<<<<<<< HEAD
-                <p className="text-gray-400 text-sm font-medium">
-                  ML-powered
-                </p>
-=======
                 <p className="text-gray-400 text-sm font-medium">ML-powered</p>
->>>>>>> aae176fe7abab1b8e1e7735cf5241835a9105b0a
               </div>
             </div>
           </div>
@@ -1767,10 +1871,6 @@ const RouteOptimizer = () => {
                 <h2 className="text-2xl font-bold text-white mb-2">
                   Plan Your Route
                 </h2>
-<<<<<<< HEAD
-            
-=======
->>>>>>> aae176fe7abab1b8e1e7735cf5241835a9105b0a
               </div>
 
               <div className="space-y-6">
@@ -1892,9 +1992,6 @@ const RouteOptimizer = () => {
                     val: priorityMode,
                     set: (newVal) => {
                       setPriorityMode(newVal);
-                      // When turning OFF with an existing route: immediately
-                      // re-run Google's default distance optimisation and
-                      // redraw the path in plain yellow (no priority colours).
                       if (
                         !newVal &&
                         routeResults &&
@@ -1910,7 +2007,7 @@ const RouteOptimizer = () => {
                           name: m.name,
                           lat: m.marker.getPosition().lat(),
                           lng: m.marker.getPosition().lng(),
-                          priority: "normal", // strip priority for default route
+                          priority: "normal",
                         }));
 
                         const origin = locs[0];
@@ -1935,7 +2032,7 @@ const RouteOptimizer = () => {
                               ),
                               stopover: true,
                             })),
-                            optimizeWaypoints: true, // Google picks shortest distance order
+                            optimizeWaypoints: true,
                             travelMode: "DRIVING",
                             drivingOptions: {
                               departureTime: new Date(),
@@ -1945,7 +2042,6 @@ const RouteOptimizer = () => {
                           async (result, status) => {
                             if (status !== "OK") return;
 
-                            // Draw a single plain yellow polyline
                             clearPriorityPolylines();
                             result.routes[0].legs.forEach((leg) => {
                               const path = [];
@@ -1985,7 +2081,6 @@ const RouteOptimizer = () => {
                               destination,
                             ];
 
-                            // Redraw all markers plain yellow with new order numbers
                             markers.forEach((m) => m.marker?.setMap(null));
                             const newMarkers = optimizedRoute.map((loc, i) => {
                               const marker = new window.google.maps.Marker({
@@ -2385,9 +2480,7 @@ const RouteOptimizer = () => {
                     routeResults.totalDuration ||
                     baseRouteMetrics.totalDistance >
                       routeResults.totalDistance) ? (
-                    /* Show comparison ONLY when optimization actually improved the route */
                     <div className="space-y-3">
-                      {/* Optimized Route Header */}
                       <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-3">
                         <div className="flex items-center gap-2">
                           <div className="w-8 h-8 bg-green-500/20 rounded-lg flex items-center justify-center">
@@ -2404,9 +2497,7 @@ const RouteOptimizer = () => {
                         </div>
                       </div>
 
-                      {/* Comparison Cards */}
                       <div className="grid grid-cols-2 gap-3">
-                        {/* Duration Comparison */}
                         <div className="bg-[#1A1A1A] rounded-xl border border-[#333] p-4">
                           <div className="flex items-center gap-2 mb-2">
                             <Clock className="w-4 h-4 text-[#FFC000]" />
@@ -2415,7 +2506,6 @@ const RouteOptimizer = () => {
                             </span>
                           </div>
                           <div className="space-y-2">
-                            {/* Base Route - Always shown as worse (longer) */}
                             <div className="flex items-center justify-between pb-2 border-b border-[#333]/50">
                               <span className="text-xs text-red-400/60">
                                 Before:
@@ -2424,7 +2514,6 @@ const RouteOptimizer = () => {
                                 {formatDuration(baseRouteMetrics.totalDuration)}
                               </span>
                             </div>
-                            {/* Optimized Route - Always shown as better (shorter) */}
                             <div className="flex items-center justify-between">
                               <span className="text-xs text-green-400 font-medium">
                                 After:
@@ -2433,7 +2522,6 @@ const RouteOptimizer = () => {
                                 {formatDuration(routeResults.totalDuration)}
                               </span>
                             </div>
-                            {/* Difference - Always shows savings */}
                             {baseRouteMetrics.totalDuration >
                               routeResults.totalDuration && (
                               <div className="flex items-center gap-1.5 pt-1.5 border-t border-green-500/20">
@@ -2458,7 +2546,6 @@ const RouteOptimizer = () => {
                           </div>
                         </div>
 
-                        {/* Distance Comparison */}
                         <div className="bg-[#1A1A1A] rounded-xl border border-[#333] p-4">
                           <div className="flex items-center gap-2 mb-2">
                             <Navigation className="w-4 h-4 text-blue-400" />
@@ -2467,7 +2554,6 @@ const RouteOptimizer = () => {
                             </span>
                           </div>
                           <div className="space-y-2">
-                            {/* Base Route - Always shown as worse (longer) */}
                             <div className="flex items-center justify-between pb-2 border-b border-[#333]/50">
                               <span className="text-xs text-red-400/60">
                                 Before:
@@ -2476,7 +2562,6 @@ const RouteOptimizer = () => {
                                 {formatDistance(baseRouteMetrics.totalDistance)}
                               </span>
                             </div>
-                            {/* Optimized Route - Always shown as better (shorter) */}
                             <div className="flex items-center justify-between">
                               <span className="text-xs text-green-400 font-medium">
                                 After:
@@ -2485,7 +2570,6 @@ const RouteOptimizer = () => {
                                 {formatDistance(routeResults.totalDistance)}
                               </span>
                             </div>
-                            {/* Difference - Always shows savings */}
                             {baseRouteMetrics.totalDistance >
                               routeResults.totalDistance && (
                               <div className="flex items-center gap-1.5 pt-1.5 border-t border-green-500/20">
@@ -2511,7 +2595,6 @@ const RouteOptimizer = () => {
                         </div>
                       </div>
 
-                      {/* Total Stops Card */}
                       <div className="bg-[#1A1A1A] rounded-xl border border-[#333] p-4">
                         <div className="flex items-center gap-2 mb-1">
                           <MapPin className="w-4 h-4 text-green-400" />
@@ -2525,7 +2608,6 @@ const RouteOptimizer = () => {
                       </div>
                     </div>
                   ) : (
-                    /* Fallback to original layout if no base metrics OR if optimization didn't improve */
                     <div className="grid grid-cols-3 gap-3">
                       {[
                         {
@@ -2565,7 +2647,7 @@ const RouteOptimizer = () => {
                     </div>
                   )}
 
-                  {/* Route Re-optimization Banner (NEW) */}
+                  {/* Route Re-optimization Banner */}
                   {rerouteTrigger > 0 && deliveryMode && (
                     <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-xl flex items-center gap-3">
                       <div className="w-8 h-8 bg-green-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
@@ -2678,7 +2760,6 @@ const RouteOptimizer = () => {
                           ))}
                       </div>
 
-                      {/* Rain between stops */}
                       {weatherData.filter(
                         (w) => w.type === "route" && w.severity >= 2,
                       ).length > 0 && (
@@ -3082,9 +3163,7 @@ const RouteOptimizer = () => {
                       </div>
 
                       {priorityMode ? (
-                        /* ── PRIORITY MODE ON: grouped by tier with legend ── */
                         <div className="space-y-3">
-                          {/* Priority colour legend */}
                           <div className="flex flex-wrap gap-2 p-2 bg-black/30 rounded-xl border border-[#333]">
                             {Object.entries(PRIORITIES).map(([key, p]) => (
                               <div
@@ -3107,7 +3186,6 @@ const RouteOptimizer = () => {
                             ))}
                           </div>
 
-                          {/* START POINT */}
                           {startPoint && deliveryMode && (
                             <div className="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-xl">
                               <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white bg-green-500 flex-shrink-0">
@@ -3127,7 +3205,6 @@ const RouteOptimizer = () => {
                             </div>
                           )}
 
-                          {/* Grouped stops: Urgent → High → Normal → Low */}
                           {["urgent", "high", "normal", "low"].map(
                             (priorityKey) => {
                               const stopsForPriority =
@@ -3195,7 +3272,6 @@ const RouteOptimizer = () => {
                           )}
                         </div>
                       ) : (
-                        /* ── PRIORITY MODE OFF: simple flat numbered list ── */
                         <div className="space-y-1.5">
                           {startPoint && deliveryMode && (
                             <div className="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-xl mb-2">
@@ -3242,7 +3318,7 @@ const RouteOptimizer = () => {
         )}
       </div>
 
-      {/* ═══ PRIORITY UPDATE MODAL (NEW) ═══ */}
+      {/* ═══ PRIORITY UPDATE MODAL ═══ */}
       {deliveryMode && priorityUpdateMode && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
           <div className="bg-[#1A1A1A] border border-[#333] rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[80vh] overflow-y-auto">
