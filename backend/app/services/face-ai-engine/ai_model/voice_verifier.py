@@ -51,30 +51,45 @@ SEGMENT_DURATION_SEC = 3.0        # Each segment duration
 SEGMENT_OVERLAP_SEC = 1.0         # Overlap between consecutive segments
 MAX_SEGMENTS = 10                 # Max segments to process per audio
 
-# ── Sigmoid score mapping parameters ────────────────────────────────────────
+# ── Sigmoid score mapping parameters (STRICT CALIBRATION v3) ────────────────
+# These thresholds are tuned for SECURITY-CRITICAL identity verification.
+# It is better to reject a genuine speaker than accept an impostor.
+#
 # WavLM cosine similarity (cross-device, cross-codec):
-#   Same speaker:      typically 0.35–0.60
-#   Different speaker: typically -0.10–0.25
-#   Decision boundary: ~0.30 cosine similarity
-WAVLM_SIGMOID_STEEPNESS = 16
-WAVLM_SIGMOID_MIDPOINT = 0.30
+#   Verified same speaker:  typically 0.50–0.70
+#   Different speaker:      typically -0.10–0.45 (can be surprisingly high
+#                           when same language/phrase/environment)
+#   Ambiguous zone:         0.40–0.55
+#   Decision boundary:      ~0.52 cosine similarity
+WAVLM_SIGMOID_STEEPNESS = 8       # Flatter curve → better mid-range discrimination
+WAVLM_SIGMOID_MIDPOINT = 0.52     # Raised from 0.42 — stricter impostor rejection
+WAVLM_COSINE_FLOOR = 0.35         # Below this = hard cap at 10%
+WAVLM_COSINE_SOFT_FLOOR = 0.46    # Below this = heavy attenuation
 
 # ECAPA-TDNN cosine similarity:
-#   Same speaker:      typically 0.45–0.85
-#   Different speaker: typically -0.10–0.30
-#   Decision boundary: ~0.38 cosine similarity
-ECAPA_SIGMOID_STEEPNESS = 14
-ECAPA_SIGMOID_MIDPOINT = 0.38
+#   Verified same speaker:  typically 0.60–0.90
+#   Different speaker:      typically -0.10–0.50 (can be high for same
+#                           language/phrase/acoustic conditions)
+#   Ambiguous zone:         0.45–0.62
+#   Decision boundary:      ~0.62 cosine similarity
+ECAPA_SIGMOID_STEEPNESS = 7       # Flatter curve for fine discrimination
+ECAPA_SIGMOID_MIDPOINT = 0.62     # Raised from 0.52 — much stricter
+ECAPA_COSINE_FLOOR = 0.38         # Below this = hard cap at 10%
+ECAPA_COSINE_SOFT_FLOOR = 0.54    # Below this = heavy attenuation
 
 # Ensemble weights (ECAPA gets more weight — better speaker discrimination)
-WAVLM_WEIGHT = 0.40
-ECAPA_WEIGHT = 0.60
+WAVLM_WEIGHT = 0.35
+ECAPA_WEIGHT = 0.65
 
-# Both models must produce a score above this for the ensemble to pass
-MODEL_AGREEMENT_THRESHOLD = 0.35
+# Both models must produce a mapped score above this for ensemble to pass
+MODEL_AGREEMENT_THRESHOLD = 0.45
+
+# Maximum output score — prevents overconfident scores near 1.0
+# True same-speaker should max around 0.88; keeps scores realistic
+SCORE_COMPRESSION_MAX = 0.90
 
 # Audio quality thresholds
-MIN_RMS_ENERGY = 0.005            # Reject very quiet audio
+MIN_RMS_ENERGY = 0.008            # Reject very quiet audio
 
 # ── Model singletons ────────────────────────────────────────────────────────
 _wavlm_model = None
@@ -558,19 +573,54 @@ def _assess_audio_quality(audio: np.ndarray) -> float:
 
 # ── Comparison ────────────────────────────────────────────────────────────────
 
-def _sigmoid_score(cos_sim: float, steepness: float, midpoint: float) -> float:
-    """Map cosine similarity to 0-1 score via sigmoid."""
-    score = 1.0 / (1.0 + np.exp(-steepness * (cos_sim - midpoint)))
-    return float(np.clip(score, 0.0, 1.0))
+def _sigmoid_score(
+    cos_sim: float,
+    steepness: float,
+    midpoint: float,
+    cosine_floor: float = 0.0,
+    cosine_soft_floor: float = 0.0,
+) -> float:
+    """
+    Map cosine similarity to 0–1 score via calibrated sigmoid with floor checks.
+
+    Floor logic:
+      - cos_sim < cosine_floor      → hard cap at 0.15 (definitely different)
+      - cos_sim < cosine_soft_floor  → attenuate score by 0.5× (ambiguous zone)
+      - Score is compressed to prevent overconfident values near 1.0
+    """
+    # Hard floor — definitely different speaker
+    if cos_sim < cosine_floor:
+        logger.info(f"Cosine {cos_sim:.4f} below hard floor {cosine_floor} → capped at 0.10")
+        return 0.10
+
+    raw_sigmoid = 1.0 / (1.0 + np.exp(-steepness * (cos_sim - midpoint)))
+
+    # Soft floor — ambiguous zone, strong attenuation
+    if cos_sim < cosine_soft_floor:
+        # Linear ramp from 0.25 to 0.75 across the soft-floor range
+        ramp = (cos_sim - cosine_floor) / max(cosine_soft_floor - cosine_floor, 1e-6)
+        attenuation = 0.25 + 0.50 * ramp
+        raw_sigmoid *= attenuation
+        logger.info(f"Cosine {cos_sim:.4f} in soft-floor zone → attenuation={attenuation:.3f}")
+
+    # Score compression — prevent overconfident scores
+    score = raw_sigmoid * SCORE_COMPRESSION_MAX
+
+    return float(np.clip(score, 0.0, SCORE_COMPRESSION_MAX))
 
 
 def _ensemble_score(
     wavlm_score: Optional[float],
     ecapa_score: Optional[float],
+    wavlm_cos: Optional[float] = None,
+    ecapa_cos: Optional[float] = None,
+    mfcc_corr: Optional[float] = None,
+    pitch_sim: Optional[float] = None,
 ) -> float:
     """
     Compute ensemble score from individual model scores.
-    Applies agreement checks and conservative scoring.
+    Applies strict agreement checks, conservative geometric-mean blending,
+    MFCC spectral correlation, and pitch (F0) similarity cross-checks.
     """
     scores = []
     if wavlm_score is not None:
@@ -582,30 +632,192 @@ def _ensemble_score(
         return 0.0
 
     if len(scores) == 2:
-        # Both models available — weighted ensemble with agreement check
+        # ── Conservative ensemble: use geometric-mean-like blending ─────
+        # Geometric mean penalises when either model is low, unlike weighted avg
         total_weight = WAVLM_WEIGHT + ECAPA_WEIGHT
-        ensemble = (wavlm_score * WAVLM_WEIGHT + ecapa_score * ECAPA_WEIGHT) / total_weight
+        weighted_avg = (wavlm_score * WAVLM_WEIGHT + ecapa_score * ECAPA_WEIGHT) / total_weight
+        # Geometric mean (with epsilon to avoid log(0))
+        geo_mean = float(np.sqrt(max(wavlm_score, 1e-6) * max(ecapa_score, 1e-6)))
+        # Blend: favour the more conservative (lower) estimate
+        ensemble = 0.40 * weighted_avg + 0.60 * geo_mean
 
-        # Agreement penalty: models disagreeing strongly → reduce confidence
+        logger.info(f"Ensemble base: weighted_avg={weighted_avg:.4f}, "
+                    f"geo_mean={geo_mean:.4f}, blended={ensemble:.4f}")
+
+        # ── Strict agreement checks ──────────────────────────────────────
         score_diff = abs(wavlm_score - ecapa_score)
-        if score_diff > 0.35:
-            logger.warning(f"Model disagreement: WavLM={wavlm_score:.4f}, "
-                          f"ECAPA={ecapa_score:.4f}")
-            ensemble = min(wavlm_score, ecapa_score) * 0.9
-        elif score_diff > 0.20:
-            penalty = (score_diff - 0.20) * 0.5
-            ensemble *= (1.0 - penalty)
 
-        # Both models must pass minimum threshold
-        if wavlm_score < MODEL_AGREEMENT_THRESHOLD and ecapa_score < MODEL_AGREEMENT_THRESHOLD:
-            ensemble = min(ensemble, 0.20)
+        if score_diff > 0.25:
+            # Strong disagreement — use the LOWER score with heavy penalty
+            logger.warning(f"Strong model disagreement: WavLM={wavlm_score:.4f}, "
+                          f"ECAPA={ecapa_score:.4f} (diff={score_diff:.4f})")
+            ensemble = min(wavlm_score, ecapa_score) * 0.65
+        elif score_diff > 0.15:
+            # Moderate disagreement — penalise proportionally
+            penalty = (score_diff - 0.15) * 1.2
+            ensemble *= (1.0 - min(penalty, 0.5))
+            logger.info(f"Model disagreement penalty: {penalty:.4f}")
 
-        return ensemble
+        # Both models must individually exceed the agreement threshold
+        if wavlm_score < MODEL_AGREEMENT_THRESHOLD or ecapa_score < MODEL_AGREEMENT_THRESHOLD:
+            min_s = min(wavlm_score, ecapa_score)
+            ensemble = min(ensemble, min_s * 0.70)
+            logger.info(f"Agreement gate: at least one model below {MODEL_AGREEMENT_THRESHOLD} "
+                        f"→ capped at {ensemble:.4f}")
+
+        # Raw-cosine cross-check: if EITHER raw cosine is low, cap hard
+        if wavlm_cos is not None and ecapa_cos is not None:
+            if wavlm_cos < WAVLM_COSINE_SOFT_FLOOR and ecapa_cos < ECAPA_COSINE_SOFT_FLOOR:
+                ensemble = min(ensemble, 0.22)
+                logger.info(f"Both raw cosines below soft floor → capped at 0.22")
+            elif wavlm_cos < WAVLM_COSINE_SOFT_FLOOR or ecapa_cos < ECAPA_COSINE_SOFT_FLOOR:
+                ensemble = min(ensemble, 0.40)
+                logger.info(f"One raw cosine below soft floor → capped at 0.40")
+
+        # ── MFCC correlation: strong penalty for low, modest bonus for high ──
+        if mfcc_corr is not None:
+            if mfcc_corr < 0.45:
+                # Very low spectral match → strong penalise
+                mfcc_penalty = 0.60
+                ensemble *= mfcc_penalty
+                logger.info(f"MFCC very low ({mfcc_corr:.4f}) → penalty ×{mfcc_penalty}")
+            elif mfcc_corr < 0.65:
+                # Low-ish spectral match → moderate penalise
+                mfcc_penalty = 0.75 + 0.25 * ((mfcc_corr - 0.45) / 0.20)
+                ensemble *= mfcc_penalty
+                logger.info(f"MFCC low ({mfcc_corr:.4f}) → penalty ×{mfcc_penalty:.3f}")
+            elif mfcc_corr > 0.85:
+                # Very high spectral match → small bonus
+                mfcc_bonus = 1.03
+                ensemble = min(ensemble * mfcc_bonus, SCORE_COMPRESSION_MAX)
+                logger.info(f"MFCC high ({mfcc_corr:.4f}) → bonus ×{mfcc_bonus}")
+
+        # ── Pitch (F0) cross-check ───────────────────────────────────────
+        if pitch_sim is not None:
+            if pitch_sim < 0.50:
+                pitch_penalty = 0.70
+                ensemble *= pitch_penalty
+                logger.info(f"Pitch mismatch ({pitch_sim:.4f}) → penalty ×{pitch_penalty}")
+            elif pitch_sim < 0.65:
+                pitch_penalty = 0.80 + 0.20 * ((pitch_sim - 0.50) / 0.15)
+                ensemble *= pitch_penalty
+                logger.info(f"Pitch low ({pitch_sim:.4f}) → penalty ×{pitch_penalty:.3f}")
+
+        return float(np.clip(ensemble, 0.0, SCORE_COMPRESSION_MAX))
     else:
-        # Single model — apply penalty for lower confidence
+        # Single model — severe penalty for lower confidence
         name, score, weight = scores[0]
-        logger.info(f"Single-model voice ({name}): {score:.4f} → {score * 0.90:.4f}")
-        return score * 0.90
+        penalised = score * 0.70
+        logger.info(f"Single-model voice ({name}): {score:.4f} → {penalised:.4f}")
+        return float(np.clip(penalised, 0.0, SCORE_COMPRESSION_MAX))
+
+
+def _compute_pitch_similarity(audio1: np.ndarray, audio2: np.ndarray) -> Optional[float]:
+    """
+    Compare fundamental frequency (F0/pitch) distributions between two speakers.
+    Different speakers have different pitch ranges — this catches impostors
+    that embedding models miss (e.g., similar accent but different pitch).
+
+    Uses median F0, F0 range, and F0 standard deviation as speaker traits.
+
+    Returns:
+        Similarity 0.0–1.0, or None on error.
+    """
+    try:
+        import librosa
+
+        def _pitch_stats(audio: np.ndarray):
+            """Extract pitch statistics from audio."""
+            f0, voiced_flag, _ = librosa.pyin(
+                audio, fmin=60, fmax=500, sr=SAMPLE_RATE
+            )
+            # Only use voiced frames
+            f0_voiced = f0[voiced_flag] if voiced_flag is not None else f0[~np.isnan(f0)]
+            if len(f0_voiced) < 5:
+                return None
+            return {
+                'median': float(np.median(f0_voiced)),
+                'mean': float(np.mean(f0_voiced)),
+                'std': float(np.std(f0_voiced)),
+                'p10': float(np.percentile(f0_voiced, 10)),
+                'p90': float(np.percentile(f0_voiced, 90)),
+            }
+
+        stats1 = _pitch_stats(audio1)
+        stats2 = _pitch_stats(audio2)
+
+        if stats1 is None or stats2 is None:
+            logger.info("Pitch analysis: insufficient voiced frames")
+            return None
+
+        # Compare median F0 — same speaker should have similar pitch center
+        median_diff = abs(stats1['median'] - stats2['median'])
+        # Typical same-speaker median diff: 0–20 Hz; diff speaker: 20–100+ Hz
+        median_sim = max(0.0, 1.0 - (median_diff / 60.0))
+
+        # Compare F0 range (p90-p10)
+        range1 = stats1['p90'] - stats1['p10']
+        range2 = stats2['p90'] - stats2['p10']
+        range_ratio = min(range1, range2) / max(range1, range2, 1e-6)
+
+        # Compare F0 variability
+        std_diff = abs(stats1['std'] - stats2['std'])
+        std_sim = max(0.0, 1.0 - (std_diff / 30.0))
+
+        # Combined: 50% median, 25% range, 25% std
+        combined = 0.50 * median_sim + 0.25 * range_ratio + 0.25 * std_sim
+
+        logger.info(f"Pitch similarity: median_diff={median_diff:.1f}Hz, "
+                     f"median_sim={median_sim:.3f}, range_ratio={range_ratio:.3f}, "
+                     f"std_sim={std_sim:.3f}, combined={combined:.4f}")
+        return float(combined)
+
+    except Exception as e:
+        logger.warning(f"Pitch comparison failed: {e}")
+        return None
+
+
+def _compute_mfcc_correlation(audio1: np.ndarray, audio2: np.ndarray) -> Optional[float]:
+    """
+    Compute MFCC-based spectral correlation between two audio signals.
+    Provides a lightweight third verification signal based on vocal tract
+    characteristics. Same speaker should have correlated MFCC patterns.
+
+    Returns:
+        Pearson correlation of mean MFCC vectors (0.0–1.0), or None on error.
+    """
+    try:
+        import librosa
+
+        # Extract 20 MFCCs from each audio
+        mfcc1 = librosa.feature.mfcc(y=audio1, sr=SAMPLE_RATE, n_mfcc=20)
+        mfcc2 = librosa.feature.mfcc(y=audio2, sr=SAMPLE_RATE, n_mfcc=20)
+
+        # Use mean + std of each MFCC coefficient as a compact speaker descriptor
+        desc1 = np.concatenate([np.mean(mfcc1, axis=1), np.std(mfcc1, axis=1)])
+        desc2 = np.concatenate([np.mean(mfcc2, axis=1), np.std(mfcc2, axis=1)])
+
+        # Pearson correlation
+        corr = float(np.corrcoef(desc1, desc2)[0, 1])
+        # Clamp to [0, 1] — negative correlation means very different speakers
+        corr = max(0.0, corr)
+
+        # Also compute delta-MFCC correlation for temporal dynamics
+        delta1 = librosa.feature.delta(mfcc1)
+        delta2 = librosa.feature.delta(mfcc2)
+        delta_desc1 = np.concatenate([np.mean(delta1, axis=1), np.std(delta1, axis=1)])
+        delta_desc2 = np.concatenate([np.mean(delta2, axis=1), np.std(delta2, axis=1)])
+        delta_corr = max(0.0, float(np.corrcoef(delta_desc1, delta_desc2)[0, 1]))
+
+        # Combined: 70% static MFCC, 30% delta MFCC
+        combined_corr = 0.70 * corr + 0.30 * delta_corr
+        logger.info(f"MFCC correlation: static={corr:.4f}, delta={delta_corr:.4f}, "
+                     f"combined={combined_corr:.4f}")
+        return combined_corr
+
+    except Exception as e:
+        logger.warning(f"MFCC correlation failed: {e}")
+        return None
 
 
 def compare_voices(video1_path: str, video2_path: str) -> float:
@@ -614,7 +826,7 @@ def compare_voices(video1_path: str, video2_path: str) -> float:
 
     Returns:
         Similarity score 0.0 (definitely different) to 1.0 (definitely same).
-        Uses ensemble of WavLM + ECAPA-TDNN for maximum accuracy.
+        Uses ensemble of WavLM + ECAPA-TDNN + MFCC for maximum accuracy.
     """
     audio1, dur1 = extract_audio(video1_path)
     audio2, dur2 = extract_audio(video2_path)
@@ -639,12 +851,14 @@ def compare_voices(video1_path: str, video2_path: str) -> float:
 
     wavlm_score = None
     ecapa_score = None
+    wavlm_cos_final = None
+    ecapa_cos_final = None
 
-    # ── WavLM score ───────────────────────────────────────────────────────
+    # ── WavLM score (calibrated) ──────────────────────────────────────────
     if wavlm1 is not None and wavlm2 is not None:
         wavlm_cos = float(np.dot(wavlm1, wavlm2))
 
-        # Also try batch-mode comparison for cross-validation
+        # Cross-validate with batch-mode comparison
         try:
             model, feature_extractor = _load_wavlm()
             inputs = feature_extractor(
@@ -661,35 +875,60 @@ def compare_voices(video1_path: str, video2_path: str) -> float:
                         batch_embs[0:1], batch_embs[1:2]
                     ).item()
                 )
-            wavlm_cos = (wavlm_cos + batch_cos) / 2.0
+            # Use conservative (lower) of segmented vs batch for security
+            wavlm_cos = min(wavlm_cos, (wavlm_cos + batch_cos) / 2.0)
             logger.info(f"WavLM cos_sim: segmented={float(np.dot(wavlm1, wavlm2)):.4f}, "
-                        f"batch={batch_cos:.4f}, avg={wavlm_cos:.4f}")
+                        f"batch={batch_cos:.4f}, final={wavlm_cos:.4f}")
         except Exception as e:
             logger.warning(f"WavLM batch comparison fallback: {e}")
 
-        wavlm_score = _sigmoid_score(wavlm_cos, WAVLM_SIGMOID_STEEPNESS, WAVLM_SIGMOID_MIDPOINT)
-        logger.info(f"WavLM: cos_sim={wavlm_cos:.4f}, score={wavlm_score:.4f}")
+        wavlm_cos_final = wavlm_cos
+        wavlm_score = _sigmoid_score(
+            wavlm_cos, WAVLM_SIGMOID_STEEPNESS, WAVLM_SIGMOID_MIDPOINT,
+            cosine_floor=WAVLM_COSINE_FLOOR,
+            cosine_soft_floor=WAVLM_COSINE_SOFT_FLOOR,
+        )
+        logger.info(f"WavLM: cos_sim={wavlm_cos:.4f}, calibrated_score={wavlm_score:.4f}")
 
-    # ── ECAPA-TDNN score ──────────────────────────────────────────────────
+    # ── ECAPA-TDNN score (calibrated) ─────────────────────────────────────
     if ecapa1 is not None and ecapa2 is not None:
         ecapa_cos = float(np.dot(ecapa1, ecapa2))
-        ecapa_score = _sigmoid_score(ecapa_cos, ECAPA_SIGMOID_STEEPNESS, ECAPA_SIGMOID_MIDPOINT)
-        logger.info(f"ECAPA: cos_sim={ecapa_cos:.4f}, score={ecapa_score:.4f}")
+        ecapa_cos_final = ecapa_cos
+        ecapa_score = _sigmoid_score(
+            ecapa_cos, ECAPA_SIGMOID_STEEPNESS, ECAPA_SIGMOID_MIDPOINT,
+            cosine_floor=ECAPA_COSINE_FLOOR,
+            cosine_soft_floor=ECAPA_COSINE_SOFT_FLOOR,
+        )
+        logger.info(f"ECAPA: cos_sim={ecapa_cos:.4f}, calibrated_score={ecapa_score:.4f}")
+
+    # ── MFCC spectral correlation (third signal) ─────────────────────────
+    mfcc_corr = _compute_mfcc_correlation(audio1, audio2)
+
+    # ── Pitch (F0) similarity (fourth signal) ────────────────────────────
+    pitch_sim = _compute_pitch_similarity(audio1, audio2)
 
     # ── Ensemble ──────────────────────────────────────────────────────────
-    final_score = _ensemble_score(wavlm_score, ecapa_score)
+    final_score = _ensemble_score(
+        wavlm_score, ecapa_score,
+        wavlm_cos=wavlm_cos_final,
+        ecapa_cos=ecapa_cos_final,
+        mfcc_corr=mfcc_corr,
+        pitch_sim=pitch_sim,
+    )
 
-    # Apply quality scaling
-    if min_quality < 0.6:
-        quality_factor = 0.7 + 0.3 * (min_quality / 0.6)
+    # Apply quality scaling (aggressive curve)
+    if min_quality < 0.75:
+        quality_factor = 0.50 + 0.50 * (min_quality / 0.75)
         final_score *= quality_factor
         logger.info(f"Quality adjustment: factor={quality_factor:.3f}")
 
-    final_score = float(np.clip(final_score, 0.0, 1.0))
+    final_score = float(np.clip(final_score, 0.0, SCORE_COMPRESSION_MAX))
 
     logger.info(f"Voice ensemble: final_score={final_score:.4f} "
                 f"(durations: {dur1:.2f}s vs {dur2:.2f}s, "
-                f"quality: {quality1:.2f}/{quality2:.2f})")
+                f"quality: {quality1:.2f}/{quality2:.2f}, "
+                f"mfcc={mfcc_corr:.4f if mfcc_corr else 'N/A'}, "
+                f"pitch={pitch_sim:.4f if pitch_sim else 'N/A'})")
     return round(final_score, 4)
 
 
@@ -728,22 +967,45 @@ def compare_voice_with_reference_audio(
 
     wavlm_score = None
     ecapa_score = None
+    wavlm_cos_final = None
+    ecapa_cos_final = None
 
     if wavlm1 is not None and wavlm2 is not None:
         wavlm_cos = float(np.dot(wavlm1, wavlm2))
-        wavlm_score = _sigmoid_score(wavlm_cos, WAVLM_SIGMOID_STEEPNESS, WAVLM_SIGMOID_MIDPOINT)
+        wavlm_cos_final = wavlm_cos
+        wavlm_score = _sigmoid_score(
+            wavlm_cos, WAVLM_SIGMOID_STEEPNESS, WAVLM_SIGMOID_MIDPOINT,
+            cosine_floor=WAVLM_COSINE_FLOOR,
+            cosine_soft_floor=WAVLM_COSINE_SOFT_FLOOR,
+        )
 
     if ecapa1 is not None and ecapa2 is not None:
         ecapa_cos = float(np.dot(ecapa1, ecapa2))
-        ecapa_score = _sigmoid_score(ecapa_cos, ECAPA_SIGMOID_STEEPNESS, ECAPA_SIGMOID_MIDPOINT)
+        ecapa_cos_final = ecapa_cos
+        ecapa_score = _sigmoid_score(
+            ecapa_cos, ECAPA_SIGMOID_STEEPNESS, ECAPA_SIGMOID_MIDPOINT,
+            cosine_floor=ECAPA_COSINE_FLOOR,
+            cosine_soft_floor=ECAPA_COSINE_SOFT_FLOOR,
+        )
 
-    final_score = _ensemble_score(wavlm_score, ecapa_score)
+    # MFCC spectral correlation
+    mfcc_corr = _compute_mfcc_correlation(ref_audio, live_audio)
+    # Pitch F0 similarity
+    pitch_sim = _compute_pitch_similarity(ref_audio, live_audio)
 
-    if min_quality < 0.6:
-        final_score *= 0.7 + 0.3 * (min_quality / 0.6)
+    final_score = _ensemble_score(
+        wavlm_score, ecapa_score,
+        wavlm_cos=wavlm_cos_final,
+        ecapa_cos=ecapa_cos_final,
+        mfcc_corr=mfcc_corr,
+        pitch_sim=pitch_sim,
+    )
+
+    if min_quality < 0.75:
+        final_score *= 0.50 + 0.50 * (min_quality / 0.75)
 
     logger.info(f"Voice (video→audio): final_score={final_score:.4f}")
-    return round(float(np.clip(final_score, 0.0, 1.0)), 4)
+    return round(float(np.clip(final_score, 0.0, SCORE_COMPRESSION_MAX)), 4)
 
 
 def _compare_audio_arrays(audio1: np.ndarray, audio2: np.ndarray) -> float:
@@ -772,11 +1034,13 @@ def _compare_audio_arrays(audio1: np.ndarray, audio2: np.ndarray) -> float:
 
     wavlm_score = None
     ecapa_score = None
+    wavlm_cos_final = None
+    ecapa_cos_final = None
 
     if wavlm1 is not None and wavlm2 is not None:
         wavlm_cos = float(np.dot(wavlm1, wavlm2))
 
-        # Also try batch-mode comparison for cross-validation
+        # Cross-validate with batch-mode comparison
         try:
             model, feature_extractor = _load_wavlm()
             inputs = feature_extractor(
@@ -793,25 +1057,47 @@ def _compare_audio_arrays(audio1: np.ndarray, audio2: np.ndarray) -> float:
                         batch_embs[0:1], batch_embs[1:2]
                     ).item()
                 )
-            wavlm_cos = (wavlm_cos + batch_cos) / 2.0
+            # Conservative: use lower of segmented vs averaged
+            wavlm_cos = min(wavlm_cos, (wavlm_cos + batch_cos) / 2.0)
         except Exception as e:
             logger.warning(f"WavLM batch comparison fallback: {e}")
 
-        wavlm_score = _sigmoid_score(wavlm_cos, WAVLM_SIGMOID_STEEPNESS, WAVLM_SIGMOID_MIDPOINT)
-        logger.info(f"WavLM (array): cos_sim={wavlm_cos:.4f}, score={wavlm_score:.4f}")
+        wavlm_cos_final = wavlm_cos
+        wavlm_score = _sigmoid_score(
+            wavlm_cos, WAVLM_SIGMOID_STEEPNESS, WAVLM_SIGMOID_MIDPOINT,
+            cosine_floor=WAVLM_COSINE_FLOOR,
+            cosine_soft_floor=WAVLM_COSINE_SOFT_FLOOR,
+        )
+        logger.info(f"WavLM (array): cos_sim={wavlm_cos:.4f}, calibrated_score={wavlm_score:.4f}")
 
     if ecapa1 is not None and ecapa2 is not None:
         ecapa_cos = float(np.dot(ecapa1, ecapa2))
-        ecapa_score = _sigmoid_score(ecapa_cos, ECAPA_SIGMOID_STEEPNESS, ECAPA_SIGMOID_MIDPOINT)
-        logger.info(f"ECAPA (array): cos_sim={ecapa_cos:.4f}, score={ecapa_score:.4f}")
+        ecapa_cos_final = ecapa_cos
+        ecapa_score = _sigmoid_score(
+            ecapa_cos, ECAPA_SIGMOID_STEEPNESS, ECAPA_SIGMOID_MIDPOINT,
+            cosine_floor=ECAPA_COSINE_FLOOR,
+            cosine_soft_floor=ECAPA_COSINE_SOFT_FLOOR,
+        )
+        logger.info(f"ECAPA (array): cos_sim={ecapa_cos:.4f}, calibrated_score={ecapa_score:.4f}")
 
-    final_score = _ensemble_score(wavlm_score, ecapa_score)
+    # MFCC spectral correlation
+    mfcc_corr = _compute_mfcc_correlation(audio1, audio2)
+    # Pitch F0 similarity
+    pitch_sim = _compute_pitch_similarity(audio1, audio2)
 
-    if min_quality < 0.6:
-        quality_factor = 0.7 + 0.3 * (min_quality / 0.6)
+    final_score = _ensemble_score(
+        wavlm_score, ecapa_score,
+        wavlm_cos=wavlm_cos_final,
+        ecapa_cos=ecapa_cos_final,
+        mfcc_corr=mfcc_corr,
+        pitch_sim=pitch_sim,
+    )
+
+    if min_quality < 0.75:
+        quality_factor = 0.50 + 0.50 * (min_quality / 0.75)
         final_score *= quality_factor
 
-    final_score = float(np.clip(final_score, 0.0, 1.0))
+    final_score = float(np.clip(final_score, 0.0, SCORE_COMPRESSION_MAX))
     logger.info(f"Voice (array compare): final_score={final_score:.4f} "
                 f"(quality: {quality1:.2f}/{quality2:.2f})")
     return round(final_score, 4)

@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 FACE_WEIGHT = 0.55             # Weight for face score in combined decision
 VOICE_WEIGHT = 0.45            # Weight for voice score — critical for security
 
-COMBINED_MATCH_THRESHOLD = 0.62  # Combined score to call SAME PERSON
-HIGH_CONFIDENCE_THRESHOLD = 0.80  # Above this = HIGH confidence
-LOW_CONFIDENCE_THRESHOLD = 0.50   # Below this = LOW confidence
+COMBINED_MATCH_THRESHOLD = 0.68  # Combined score to call SAME PERSON (strict)
+HIGH_CONFIDENCE_THRESHOLD = 0.82  # Above this = HIGH confidence
+LOW_CONFIDENCE_THRESHOLD = 0.52   # Below this = LOW confidence
 
 # If voice is unavailable, fall back to face-only with STRICTER threshold
-FACE_ONLY_THRESHOLD = 0.68
+FACE_ONLY_THRESHOLD = 0.72
 
 # ── Individual score gates (both must pass for SAME PERSON) ─────────────────
 # Even if the combined score is above threshold, if either individual
@@ -28,7 +28,7 @@ FACE_ONLY_THRESHOLD = 0.68
 # This prevents one strong modality from compensating a weak one.
 # Stricter gates for critical security applications.
 FACE_MIN_GATE = 0.50            # Face score must be at least this to match
-VOICE_MIN_GATE = 0.40           # Voice score must be at least this (when available)
+VOICE_MIN_GATE = 0.52           # Voice score must be at least this (strict)
 
 
 # ── Result type ───────────────────────────────────────────────────────────────
