@@ -58,4 +58,11 @@ export const getVerificationResult = (token) => api.get(`/verification-link/resu
 export const verifyFaceDuringCall = (roomId, snapshotBase64) =>
   api.post('/video-call/verify-face', { room_id: roomId, snapshot: snapshotBase64 });
 
+// Sinhala Voice Assistant APIs
+export const getAssistantTracking = (trackingId) => api.get(`/assistant/tracking/${trackingId}`);
+export const postAssistantTextQuery = (text) => api.post('/assistant/query/text', { text });
+export const postAssistantVoiceQuery = (formData) =>
+  api.post('/assistant/query/voice', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+export const resetAssistantConversation = () => api.post('/assistant/reset-conversation');
+
 export default api;

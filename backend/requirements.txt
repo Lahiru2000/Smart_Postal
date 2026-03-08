@@ -17,6 +17,13 @@ librosa>=0.10.0
 soundfile>=0.12.0
 webrtcvad-wheels>=2.0.10
 
+# Sinhala Voice Assistant
+google-genai>=1.0.0
+SpeechRecognition>=3.10.0
+gTTS>=2.5.4
+imageio-ffmpeg>=0.5.1
+loguru>=0.7.2
+
 # AI face + voice verification engine
 deepface>=0.0.93
 opencv-python-headless>=4.8.0

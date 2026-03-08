@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@vladmandic/face-api": "^1.7.15",
+    "@google/genai": "^1.43.0",
     "axios": "^1.13.5",
     "face-api.js": "^0.22.2",
     "lucide-react": "^0.564.0",
