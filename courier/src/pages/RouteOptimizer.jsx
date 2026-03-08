@@ -388,6 +388,7 @@ const RouteOptimizer = () => {
 
   // ── Feature: Dynamic Priority Updates ──
   const [priorityUpdateMode, setPriorityUpdateMode] = useState(false);
+  const [priorityPreview, setPriorityPreview] = useState(null); // { stopIndex, newPriority, beforeDuration, beforeDistance, afterDuration, afterDistance, calculating }
   const [startPoint, setStartPoint] = useState(null);
   const [rerouteTrigger, setRerouteTrigger] = useState(0);
   const [startMarker, setStartMarker] = useState(null);
@@ -1518,6 +1519,15 @@ const RouteOptimizer = () => {
   const changePriority = async (stopIndex, newPriority) => {
     if (!sessionId) return;
 
+    // Snapshot current metrics as "Before" so the results panel always shows
+    // a meaningful Before → After comparison after the route recalculates.
+    if (routeResults) {
+      setBaseRouteMetrics({
+        totalDuration: routeResults.totalDuration,
+        totalDistance: routeResults.totalDistance,
+      });
+    }
+
     try {
       const { data } = await updateStopPriority(
         sessionId,
@@ -1543,6 +1553,86 @@ const RouteOptimizer = () => {
       console.error("Failed to update priority:", err);
       setError("Priority update failed. Please try again.");
     }
+  };
+
+  const previewPriorityChange = (stopIndex, newPriority) => {
+    if (!routeResults?.optimizedRoute || !window.google) return;
+
+    const beforeDuration = routeResults.totalDuration;
+    const beforeDistance = routeResults.totalDistance;
+
+    setPriorityPreview({
+      stopIndex,
+      newPriority,
+      beforeDuration,
+      beforeDistance,
+      afterDuration: null,
+      afterDistance: null,
+      calculating: true,
+    });
+
+    const updatedRoute = routeResults.optimizedRoute.map((stop, idx) =>
+      idx === stopIndex ? { ...stop, priority: newPriority } : stop,
+    );
+
+    const remaining = updatedRoute.filter(
+      (stop, idx) => !completedStops.has(idx) && idx >= currentStopIdx,
+    );
+
+    if (remaining.length < 2) {
+      setPriorityPreview((prev) => ({
+        ...prev,
+        calculating: false,
+        afterDuration: beforeDuration,
+        afterDistance: beforeDistance,
+      }));
+      return;
+    }
+
+    const startFrom = remaining[0];
+    const prioritySorted = priorityNearestNeighborSort(remaining, startFrom);
+    const origin = prioritySorted[0];
+    const destination = prioritySorted[prioritySorted.length - 1];
+    const waypoints = prioritySorted.slice(1, -1);
+
+    const directionsService = new window.google.maps.DirectionsService();
+    directionsService.route(
+      {
+        origin: new window.google.maps.LatLng(origin.lat, origin.lng),
+        destination: new window.google.maps.LatLng(
+          destination.lat,
+          destination.lng,
+        ),
+        waypoints: waypoints.map((w) => ({
+          location: new window.google.maps.LatLng(w.lat, w.lng),
+          stopover: true,
+        })),
+        optimizeWaypoints: false,
+        travelMode: "DRIVING",
+        drivingOptions: {
+          departureTime: new Date(),
+          trafficModel: "bestguess",
+        },
+      },
+      (result, status) => {
+        if (status === "OK") {
+          let newDuration = 0,
+            newDistance = 0;
+          result.routes[0].legs.forEach((leg) => {
+            newDuration += leg.duration_in_traffic?.value || leg.duration.value;
+            newDistance += leg.distance.value;
+          });
+          setPriorityPreview((prev) => ({
+            ...prev,
+            calculating: false,
+            afterDuration: newDuration,
+            afterDistance: newDistance,
+          }));
+        } else {
+          setPriorityPreview((prev) => ({ ...prev, calculating: false }));
+        }
+      },
+    );
   };
 
   const rerouteWithNewPriorities = async (updatedRoute) => {
@@ -1581,40 +1671,6 @@ const RouteOptimizer = () => {
       travelMode: "DRIVING",
       drivingOptions: { departureTime: new Date(), trafficModel: "bestguess" },
     };
-
-    const baseOrigin = remaining[0];
-    const baseDestination = remaining[remaining.length - 1];
-    const baseWaypoints = remaining.slice(1, -1);
-
-    const baseRequest = {
-      origin: new window.google.maps.LatLng(baseOrigin.lat, baseOrigin.lng),
-      destination: new window.google.maps.LatLng(
-        baseDestination.lat,
-        baseDestination.lng,
-      ),
-      waypoints: baseWaypoints.map((w) => ({
-        location: new window.google.maps.LatLng(w.lat, w.lng),
-        stopover: true,
-      })),
-      optimizeWaypoints: false,
-      travelMode: "DRIVING",
-      drivingOptions: { departureTime: new Date(), trafficModel: "bestguess" },
-    };
-
-    directionsService.route(baseRequest, (baseResult, baseStatus) => {
-      if (baseStatus === "OK") {
-        let baseDuration = 0,
-          baseDistance = 0;
-        baseResult.routes[0].legs.forEach((leg) => {
-          baseDuration += leg.duration.value;
-          baseDistance += leg.distance.value;
-        });
-        setBaseRouteMetrics({
-          totalDuration: baseDuration,
-          totalDistance: baseDistance,
-        });
-      }
-    });
 
     directionsService.route(request, (result, status) => {
       if (status === "OK") {
@@ -2476,9 +2532,9 @@ const RouteOptimizer = () => {
                 <div className="space-y-4">
                   {/* Summary stats with base vs optimized comparison */}
                   {baseRouteMetrics &&
-                  (baseRouteMetrics.totalDuration >
+                  (baseRouteMetrics.totalDuration !==
                     routeResults.totalDuration ||
-                    baseRouteMetrics.totalDistance >
+                    baseRouteMetrics.totalDistance !==
                       routeResults.totalDistance) ? (
                     <div className="space-y-3">
                       <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-3">
@@ -2507,35 +2563,50 @@ const RouteOptimizer = () => {
                           </div>
                           <div className="space-y-2">
                             <div className="flex items-center justify-between pb-2 border-b border-[#333]/50">
-                              <span className="text-xs text-red-400/60">
+                              <span className="text-xs text-gray-500">
                                 Before:
                               </span>
-                              <span className="text-sm font-medium text-red-400/60 line-through">
+                              <span className="text-sm font-medium text-gray-400 line-through">
                                 {formatDuration(baseRouteMetrics.totalDuration)}
                               </span>
                             </div>
                             <div className="flex items-center justify-between">
-                              <span className="text-xs text-green-400 font-medium">
+                              <span
+                                className={`text-xs font-medium ${routeResults.totalDuration < baseRouteMetrics.totalDuration ? "text-green-400" : routeResults.totalDuration > baseRouteMetrics.totalDuration ? "text-red-400" : "text-gray-400"}`}
+                              >
                                 After:
                               </span>
                               <span className="text-lg font-bold text-[#FFC000]">
                                 {formatDuration(routeResults.totalDuration)}
                               </span>
                             </div>
-                            {baseRouteMetrics.totalDuration >
+                            {baseRouteMetrics.totalDuration !==
                               routeResults.totalDuration && (
-                              <div className="flex items-center gap-1.5 pt-1.5 border-t border-green-500/20">
-                                <TrendingUp className="w-3.5 h-3.5 text-green-400" />
-                                <span className="text-xs font-bold text-green-400">
-                                  Saved{" "}
+                              <div
+                                className={`flex items-center gap-1.5 pt-1.5 border-t ${baseRouteMetrics.totalDuration > routeResults.totalDuration ? "border-green-500/20" : "border-red-500/20"}`}
+                              >
+                                <TrendingUp
+                                  className={`w-3.5 h-3.5 ${baseRouteMetrics.totalDuration > routeResults.totalDuration ? "text-green-400" : "text-red-400"}`}
+                                />
+                                <span
+                                  className={`text-xs font-bold ${baseRouteMetrics.totalDuration > routeResults.totalDuration ? "text-green-400" : "text-red-400"}`}
+                                >
+                                  {baseRouteMetrics.totalDuration >
+                                  routeResults.totalDuration
+                                    ? "Saved "
+                                    : "+"}
                                   {formatDuration(
-                                    baseRouteMetrics.totalDuration -
-                                      routeResults.totalDuration,
+                                    Math.abs(
+                                      baseRouteMetrics.totalDuration -
+                                        routeResults.totalDuration,
+                                    ),
                                   )}{" "}
                                   (
                                   {Math.round(
-                                    ((baseRouteMetrics.totalDuration -
-                                      routeResults.totalDuration) /
+                                    (Math.abs(
+                                      baseRouteMetrics.totalDuration -
+                                        routeResults.totalDuration,
+                                    ) /
                                       baseRouteMetrics.totalDuration) *
                                       100,
                                   )}
@@ -2555,35 +2626,50 @@ const RouteOptimizer = () => {
                           </div>
                           <div className="space-y-2">
                             <div className="flex items-center justify-between pb-2 border-b border-[#333]/50">
-                              <span className="text-xs text-red-400/60">
+                              <span className="text-xs text-gray-500">
                                 Before:
                               </span>
-                              <span className="text-sm font-medium text-red-400/60 line-through">
+                              <span className="text-sm font-medium text-gray-400 line-through">
                                 {formatDistance(baseRouteMetrics.totalDistance)}
                               </span>
                             </div>
                             <div className="flex items-center justify-between">
-                              <span className="text-xs text-green-400 font-medium">
+                              <span
+                                className={`text-xs font-medium ${routeResults.totalDistance < baseRouteMetrics.totalDistance ? "text-green-400" : routeResults.totalDistance > baseRouteMetrics.totalDistance ? "text-red-400" : "text-gray-400"}`}
+                              >
                                 After:
                               </span>
                               <span className="text-lg font-bold text-blue-400">
                                 {formatDistance(routeResults.totalDistance)}
                               </span>
                             </div>
-                            {baseRouteMetrics.totalDistance >
+                            {baseRouteMetrics.totalDistance !==
                               routeResults.totalDistance && (
-                              <div className="flex items-center gap-1.5 pt-1.5 border-t border-green-500/20">
-                                <TrendingUp className="w-3.5 h-3.5 text-green-400" />
-                                <span className="text-xs font-bold text-green-400">
-                                  Saved{" "}
+                              <div
+                                className={`flex items-center gap-1.5 pt-1.5 border-t ${baseRouteMetrics.totalDistance > routeResults.totalDistance ? "border-green-500/20" : "border-red-500/20"}`}
+                              >
+                                <TrendingUp
+                                  className={`w-3.5 h-3.5 ${baseRouteMetrics.totalDistance > routeResults.totalDistance ? "text-green-400" : "text-red-400"}`}
+                                />
+                                <span
+                                  className={`text-xs font-bold ${baseRouteMetrics.totalDistance > routeResults.totalDistance ? "text-green-400" : "text-red-400"}`}
+                                >
+                                  {baseRouteMetrics.totalDistance >
+                                  routeResults.totalDistance
+                                    ? "Saved "
+                                    : "+"}
                                   {formatDistance(
-                                    baseRouteMetrics.totalDistance -
-                                      routeResults.totalDistance,
+                                    Math.abs(
+                                      baseRouteMetrics.totalDistance -
+                                        routeResults.totalDistance,
+                                    ),
                                   )}{" "}
                                   (
                                   {Math.round(
-                                    ((baseRouteMetrics.totalDistance -
-                                      routeResults.totalDistance) /
+                                    (Math.abs(
+                                      baseRouteMetrics.totalDistance -
+                                        routeResults.totalDistance,
+                                    ) /
                                       baseRouteMetrics.totalDistance) *
                                       100,
                                   )}
@@ -3321,8 +3407,9 @@ const RouteOptimizer = () => {
       {/* ═══ PRIORITY UPDATE MODAL ═══ */}
       {deliveryMode && priorityUpdateMode && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
-          <div className="bg-[#1A1A1A] border border-[#333] rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[80vh] overflow-y-auto">
-            <div className="flex items-center gap-3 mb-4">
+          <div className="bg-[#1A1A1A] border border-[#333] rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[85vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center gap-3 mb-4 flex-shrink-0">
               <div className="w-10 h-10 bg-[#FFC000]/10 rounded-xl flex items-center justify-center">
                 <TrendingUp className="w-5 h-5 text-[#FFC000]" />
               </div>
@@ -3331,21 +3418,242 @@ const RouteOptimizer = () => {
                   Update Priority
                 </h3>
                 <p className="text-xs text-gray-500">
-                  Route will auto-recalculate
+                  {priorityPreview
+                    ? "Route impact preview — confirm or pick another"
+                    : "Tap a priority level to preview the route impact"}
                 </p>
               </div>
             </div>
 
-            <div className="space-y-2 mb-4">
+            {/* ── Before / After Preview Panel — always on top, appears on first selection ── */}
+            <div className="flex-shrink-0 mb-3">
+              {priorityPreview ? (
+                <div className="rounded-xl border border-[#FFC000]/40 bg-[#FFC000]/5 overflow-hidden">
+                  {/* Panel header */}
+                  <div className="px-3 py-2 border-b border-[#FFC000]/20 flex items-center gap-2">
+                    <ArrowLeftRight className="w-3.5 h-3.5 text-[#FFC000]" />
+                    <span className="text-xs font-bold text-[#FFC000] uppercase tracking-wider">
+                      Route Impact Preview
+                    </span>
+                    <span className="ml-1 text-xs text-gray-400">
+                      — Stop {priorityPreview.stopIndex + 1} →{" "}
+                      <span
+                        className="font-bold"
+                        style={{
+                          color: getPriorityMarkerColor(
+                            priorityPreview.newPriority,
+                          ),
+                        }}
+                      >
+                        {PRIORITIES[priorityPreview.newPriority]?.label}
+                      </span>
+                    </span>
+                    {priorityPreview.calculating && (
+                      <span className="ml-auto flex items-center gap-1 text-xs text-gray-400">
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        Calculating…
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Before / After metric rows */}
+                  <div className="px-3 pb-3 pt-2 space-y-2">
+                    {/* Column headers */}
+                    <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 items-center mb-1">
+                      <span />
+                      <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest w-16 text-center">
+                        Before
+                      </span>
+                      <span className="text-[10px] font-bold text-[#FFC000] uppercase tracking-widest w-16 text-center">
+                        After
+                      </span>
+                    </div>
+
+                    {/* Est. Time row */}
+                    <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 items-center bg-black/30 rounded-lg px-3 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                        <span className="text-xs text-gray-400">Est. Time</span>
+                      </div>
+                      {/* Before */}
+                      <span className="text-sm font-bold text-white w-16 text-center">
+                        {formatDuration(priorityPreview.beforeDuration)}
+                      </span>
+                      {/* After */}
+                      <div className="flex flex-col items-center gap-0.5 w-16">
+                        {priorityPreview.calculating ? (
+                          <div className="h-4 w-14 bg-white/10 rounded animate-pulse" />
+                        ) : priorityPreview.afterDuration != null ? (
+                          <>
+                            <span
+                              className="text-sm font-bold"
+                              style={{
+                                color:
+                                  priorityPreview.afterDuration <
+                                  priorityPreview.beforeDuration
+                                    ? "#22C55E"
+                                    : priorityPreview.afterDuration >
+                                        priorityPreview.beforeDuration
+                                      ? "#EF4444"
+                                      : "#fff",
+                              }}
+                            >
+                              {formatDuration(priorityPreview.afterDuration)}
+                            </span>
+                            {priorityPreview.afterDuration !==
+                              priorityPreview.beforeDuration && (
+                              <span
+                                className="text-[10px] font-bold px-1 py-0.5 rounded leading-none"
+                                style={{
+                                  color:
+                                    priorityPreview.afterDuration <
+                                    priorityPreview.beforeDuration
+                                      ? "#22C55E"
+                                      : "#EF4444",
+                                  backgroundColor:
+                                    priorityPreview.afterDuration <
+                                    priorityPreview.beforeDuration
+                                      ? "#22C55E22"
+                                      : "#EF444422",
+                                }}
+                              >
+                                {priorityPreview.afterDuration <
+                                priorityPreview.beforeDuration
+                                  ? "−"
+                                  : "+"}
+                                {formatDuration(
+                                  Math.abs(
+                                    priorityPreview.afterDuration -
+                                      priorityPreview.beforeDuration,
+                                  ),
+                                )}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-xs text-gray-600">—</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Total Distance row */}
+                    <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 items-center bg-black/30 rounded-lg px-3 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <Route className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                        <span className="text-xs text-gray-400">
+                          Total Dist.
+                        </span>
+                      </div>
+                      {/* Before */}
+                      <span className="text-sm font-bold text-white w-16 text-center">
+                        {formatDistance(priorityPreview.beforeDistance)}
+                      </span>
+                      {/* After */}
+                      <div className="flex flex-col items-center gap-0.5 w-16">
+                        {priorityPreview.calculating ? (
+                          <div className="h-4 w-14 bg-white/10 rounded animate-pulse" />
+                        ) : priorityPreview.afterDistance != null ? (
+                          <>
+                            <span
+                              className="text-sm font-bold"
+                              style={{
+                                color:
+                                  priorityPreview.afterDistance <
+                                  priorityPreview.beforeDistance
+                                    ? "#22C55E"
+                                    : priorityPreview.afterDistance >
+                                        priorityPreview.beforeDistance
+                                      ? "#EF4444"
+                                      : "#fff",
+                              }}
+                            >
+                              {formatDistance(priorityPreview.afterDistance)}
+                            </span>
+                            {priorityPreview.afterDistance !==
+                              priorityPreview.beforeDistance && (
+                              <span
+                                className="text-[10px] font-bold px-1 py-0.5 rounded leading-none"
+                                style={{
+                                  color:
+                                    priorityPreview.afterDistance <
+                                    priorityPreview.beforeDistance
+                                      ? "#22C55E"
+                                      : "#EF4444",
+                                  backgroundColor:
+                                    priorityPreview.afterDistance <
+                                    priorityPreview.beforeDistance
+                                      ? "#22C55E22"
+                                      : "#EF444422",
+                                }}
+                              >
+                                {priorityPreview.afterDistance <
+                                priorityPreview.beforeDistance
+                                  ? "−"
+                                  : "+"}
+                                {formatDistance(
+                                  Math.abs(
+                                    priorityPreview.afterDistance -
+                                      priorityPreview.beforeDistance,
+                                  ),
+                                )}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-xs text-gray-600">—</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Confirm button */}
+                  {!priorityPreview.calculating &&
+                    priorityPreview.afterDuration != null && (
+                      <div className="px-3 pb-3 pt-1">
+                        <button
+                          onClick={() => {
+                            changePriority(
+                              priorityPreview.stopIndex,
+                              priorityPreview.newPriority,
+                            );
+                            setPriorityPreview(null);
+                            setPriorityUpdateMode(false);
+                          }}
+                          className="w-full py-2.5 rounded-lg text-sm font-bold text-black bg-[#FFC000] hover:bg-[#FFD040] transition-all"
+                        >
+                          Confirm Change
+                        </button>
+                      </div>
+                    )}
+                </div>
+              ) : (
+                /* Placeholder shown before any selection */
+                <div className="rounded-xl border border-dashed border-[#333] bg-black/20 px-4 py-3 flex items-center gap-3">
+                  <ArrowLeftRight className="w-4 h-4 text-gray-600 flex-shrink-0" />
+                  <p className="text-xs text-gray-600">
+                    Before / After comparison will appear here once you tap a
+                    priority level below.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Stop list — always visible, scrollable */}
+            <div className="flex-1 overflow-y-auto space-y-2 min-h-0 mb-3">
               {routeResults?.optimizedRoute
                 .map((stop, idx) => ({ ...stop, originalIndex: idx }))
                 .filter((stop) => !completedStops.has(stop.originalIndex))
                 .map((stop) => {
                   const actualIdx = stop.originalIndex;
+                  const isSelected = priorityPreview?.stopIndex === actualIdx;
                   return (
                     <div
                       key={actualIdx}
-                      className="p-3 bg-black/40 border border-[#333] rounded-xl"
+                      className={`p-3 rounded-xl border transition-all ${
+                        isSelected
+                          ? "bg-[#FFC000]/5 border-[#FFC000]/40"
+                          : "bg-black/40 border-[#333]"
+                      }`}
                     >
                       <div className="flex items-start justify-between mb-2">
                         <div className="flex-1 min-w-0">
@@ -3364,23 +3672,33 @@ const RouteOptimizer = () => {
                       </div>
 
                       <div className="grid grid-cols-4 gap-1.5">
-                        {Object.keys(PRIORITIES).map((priority) => (
-                          <button
-                            key={priority}
-                            onClick={() => {
-                              changePriority(actualIdx, priority);
-                              setPriorityUpdateMode(false);
-                            }}
-                            disabled={stop.priority === priority}
-                            className={`px-2 py-1.5 rounded text-xs font-bold transition-all ${
-                              stop.priority === priority
-                                ? "opacity-50 cursor-not-allowed"
-                                : "hover:opacity-80"
-                            } ${PRIORITIES[priority].bg} ${PRIORITIES[priority].color} ${PRIORITIES[priority].border} border`}
-                          >
-                            {PRIORITIES[priority].label}
-                          </button>
-                        ))}
+                        {Object.keys(PRIORITIES).map((priority) => {
+                          const isCurrentPriority = stop.priority === priority;
+                          const isPreviewedPriority =
+                            isSelected &&
+                            priorityPreview?.newPriority === priority;
+                          return (
+                            <button
+                              key={priority}
+                              onClick={() =>
+                                previewPriorityChange(actualIdx, priority)
+                              }
+                              disabled={isCurrentPriority}
+                              className={`px-2 py-1.5 rounded text-xs font-bold transition-all relative ${
+                                isCurrentPriority
+                                  ? "opacity-40 cursor-not-allowed"
+                                  : isPreviewedPriority
+                                    ? "ring-2 ring-white/60 scale-105 shadow-lg"
+                                    : "hover:opacity-90 hover:scale-105"
+                              } ${PRIORITIES[priority].bg} ${PRIORITIES[priority].color} ${PRIORITIES[priority].border} border`}
+                            >
+                              {PRIORITIES[priority].label}
+                              {isPreviewedPriority && (
+                                <span className="absolute -top-1 -right-1 w-2 h-2 bg-white rounded-full" />
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   );
@@ -3388,8 +3706,11 @@ const RouteOptimizer = () => {
             </div>
 
             <button
-              onClick={() => setPriorityUpdateMode(false)}
-              className="w-full py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium"
+              onClick={() => {
+                setPriorityPreview(null);
+                setPriorityUpdateMode(false);
+              }}
+              className="flex-shrink-0 w-full py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium"
             >
               Cancel
             </button>
