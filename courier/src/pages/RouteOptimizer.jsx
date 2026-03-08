@@ -306,6 +306,52 @@ const getPriorityMarkerColor = (p) =>
     p
   ] || "#FFC000";
 
+// ─── NATIVE MAPS NAVIGATION ──────────────────────────────────────────────────
+// Opens the Google Maps app natively on Android/iOS; falls back to web.
+// Accepts a stop object with { lat, lng, name }.
+const openNativeNavigation = (stop) => {
+  if (!stop) return;
+  const { lat, lng, name } = stop;
+  const encodedAddr = encodeURIComponent(name || `${lat},${lng}`);
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  if (isAndroid) {
+    // Intent URL — opens Google Maps app directly; browser fallback if not installed
+    window.location.href = `intent://maps.google.com/maps?daddr=${lat},${lng}&dirflg=d#Intent;scheme=https;package=com.google.android.apps.maps;end`;
+  } else if (isIOS) {
+    // Try comgooglemaps scheme; fall back to Apple Maps universal URL after 500 ms
+    const nativeUrl = `comgooglemaps://?daddr=${lat},${lng}&directionsmode=driving`;
+    const fallbackUrl = `https://maps.google.com/maps?daddr=${lat},${lng}&dirflg=d`;
+    const iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    iframe.src = nativeUrl;
+    document.body.appendChild(iframe);
+    setTimeout(() => {
+      document.body.removeChild(iframe);
+      window.open(fallbackUrl, "_blank");
+    }, 500);
+  } else {
+    // Desktop — open Google Maps in a new tab
+    window.open(
+      `https://maps.google.com/maps?daddr=${lat},${lng}&dirflg=d`,
+      "_blank",
+    );
+  }
+};
+
+// Build a multi-stop Google Maps URL for the full remaining route — kept for share/export use
+const buildFullRouteUrl = (optimizedRoute, completedStops, currentStopIdx) => {
+  const remaining = optimizedRoute.filter(
+    (_, i) => !completedStops.has(i) && i >= currentStopIdx,
+  );
+  if (!remaining.length) return null;
+  return (
+    "https://www.google.com/maps/dir/" +
+    remaining.map((s) => `${s.lat},${s.lng}`).join("/")
+  );
+};
+
 const WeatherIcon = ({ icon, className = "w-5 h-5" }) => {
   switch (icon) {
     case "sun":
@@ -398,8 +444,10 @@ const RouteOptimizer = () => {
   const gpsWatchRef = useRef(null);
   const trafficIntervalRef = useRef(null);
   const searchInputRef = useRef(null);
+  const startPointRef = useRef(null);
   const markersRef = useRef([]);
   const polylineRefs = useRef([]);
+  const startConnectorRef = useRef(null);
 
   useEffect(() => {
     markersRef.current = markers;
@@ -492,6 +540,128 @@ const RouteOptimizer = () => {
     [],
   );
 
+  // ─── START POINT MARKER ON MAP ─────────────────────────────────────────
+  useEffect(() => {
+    if (!map || !window.google) return;
+    // Remove old start marker
+    if (startMarker) {
+      startMarker.setMap(null);
+      setStartMarker(null);
+    }
+    if (!startPoint) return;
+    const marker = new window.google.maps.Marker({
+      position: { lat: startPoint.lat, lng: startPoint.lng },
+      map,
+      title: startPoint.name || "Start Point",
+      zIndex: 999,
+      icon: {
+        path: window.google.maps.SymbolPath.CIRCLE,
+        scale: 16,
+        fillColor: "#22C55E",
+        fillOpacity: 1,
+        strokeColor: "#fff",
+        strokeWeight: 3,
+      },
+      label: {
+        text: "S",
+        color: "#fff",
+        fontWeight: "bold",
+        fontSize: "12px",
+      },
+    });
+    const infoWindow = new window.google.maps.InfoWindow({
+      content: `<div style="background:#1a1a1a;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:bold;border:1px solid #22C55E">${startPoint.name?.split(",")[0] || "Start Point"}</div>`,
+    });
+    marker.addListener("click", () => infoWindow.open(map, marker));
+    setStartMarker(marker);
+    map.panTo({ lat: startPoint.lat, lng: startPoint.lng });
+  }, [startPoint, map]);
+
+  // ─── CONNECTOR LINE: START POINT → FIRST OPTIMIZED STOP ───────────────
+  useEffect(() => {
+    // Clear old connector
+    if (startConnectorRef.current) {
+      startConnectorRef.current.forEach((p) => p.setMap(null));
+      startConnectorRef.current = null;
+    }
+    if (
+      !map ||
+      !window.google ||
+      !startPoint ||
+      !routeResults?.optimizedRoute?.length
+    )
+      return;
+
+    const firstStop = routeResults.optimizedRoute[0];
+    const firstStopColor = getPriorityMarkerColor(
+      firstStop.priority || "normal",
+    );
+
+    const path = [
+      { lat: startPoint.lat, lng: startPoint.lng },
+      { lat: firstStop.lat, lng: firstStop.lng },
+    ];
+
+    // Shadow line
+    const shadow = new window.google.maps.Polyline({
+      path,
+      strokeColor: "#000000",
+      strokeWeight: 6,
+      strokeOpacity: 0.2,
+      map,
+      zIndex: 1,
+      icons: [],
+    });
+
+    // Dashed green line
+    const connector = new window.google.maps.Polyline({
+      path,
+      strokeColor: "#22C55E",
+      strokeWeight: 3,
+      strokeOpacity: 0,
+      map,
+      zIndex: 2,
+      icons: [
+        {
+          icon: {
+            path: "M 0,-1 0,1",
+            strokeOpacity: 1,
+            strokeWeight: 3,
+            strokeColor: "#22C55E",
+            scale: 4,
+          },
+          offset: "0",
+          repeat: "16px",
+        },
+      ],
+    });
+
+    // Arrow at the first stop end (colored by priority)
+    const arrow = new window.google.maps.Polyline({
+      path,
+      strokeColor: firstStopColor,
+      strokeWeight: 3,
+      strokeOpacity: 0,
+      map,
+      zIndex: 3,
+      icons: [
+        {
+          icon: {
+            path: window.google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+            scale: 4,
+            strokeColor: firstStopColor,
+            fillColor: firstStopColor,
+            fillOpacity: 1,
+            strokeOpacity: 1,
+          },
+          offset: "100%",
+        },
+      ],
+    });
+
+    startConnectorRef.current = [shadow, connector, arrow];
+  }, [startPoint, routeResults, map]);
+
   // ─── MAP INIT ──────────────────────────────────────────────────────────
   const initializeMap = () => {
     if (!mapRef.current || !window.google) return;
@@ -520,6 +690,24 @@ const RouteOptimizer = () => {
         sb.addListener("places_changed", () => handlePlacesChanged(sb, newMap));
         newMap.addListener("bounds_changed", () =>
           sb.setBounds(newMap.getBounds()),
+        );
+      }
+      if (startPointRef.current) {
+        const spBox = new window.google.maps.places.SearchBox(
+          startPointRef.current,
+        );
+        spBox.addListener("places_changed", () => {
+          const places = spBox.getPlaces();
+          if (!places?.length) return;
+          const place = places[0];
+          const loc = place.geometry.location;
+          let name = place.name;
+          if (place.formatted_address && place.formatted_address !== place.name)
+            name = `${place.name}, ${place.formatted_address}`;
+          setStartPoint({ lat: loc.lat(), lng: loc.lng(), name });
+        });
+        newMap.addListener("bounds_changed", () =>
+          spBox.setBounds(newMap.getBounds()),
         );
       }
     } catch (err) {
@@ -746,7 +934,13 @@ const RouteOptimizer = () => {
       });
 
       // ── STEP 2: OPTIMIZED route ──
-      const startFrom = allLocations[0];
+      const startFrom = startPoint || allLocations[0];
+      if (!startPoint)
+        setStartPoint({
+          lat: allLocations[0].lat,
+          lng: allLocations[0].lng,
+          name: allLocations[0].name,
+        });
       const sorted = priorityNearestNeighborSort(allLocations, startFrom);
 
       const origin = sorted[0];
@@ -1511,10 +1705,31 @@ const RouteOptimizer = () => {
     setRedirectionLog([]);
     setPriorityUpdateMode(false);
     setStartPoint(null);
+    if (startConnectorRef.current) {
+      startConnectorRef.current.forEach((p) => p.setMap(null));
+      startConnectorRef.current = null;
+    }
   };
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ║  NEW FEATURE — DYNAMIC PRIORITY UPDATES
+  // ─── SHOW FULL REMAINING ROUTE ON THE EMBEDDED MAP ───────────────────────
+  // Fits the in-app map to all remaining (not-yet-completed) stops and
+  // smoothly scrolls the page so the map is fully visible.
+  const showFullRouteOnMap = () => {
+    if (!map || !routeResults?.optimizedRoute) return;
+    const remaining = routeResults.optimizedRoute.filter(
+      (_, i) => !completedStops.has(i) && i >= currentStopIdx,
+    );
+    if (!remaining.length) return;
+
+    const bounds = new window.google.maps.LatLngBounds();
+    remaining.forEach((loc) => bounds.extend({ lat: loc.lat, lng: loc.lng }));
+    map.fitBounds(bounds, { top: 80, right: 60, bottom: 80, left: 60 });
+
+    // Scroll the map into view smoothly
+    if (mapRef.current) {
+      mapRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
   // ══════════════════════════════════════════════════════════════════════════
   const changePriority = async (stopIndex, newPriority) => {
     if (!sessionId) return;
@@ -2010,6 +2225,42 @@ const RouteOptimizer = () => {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* ── LEFT PANEL ── */}
             <div className="space-y-4">
+              {/* Start Point */}
+              <div className="bg-[#1A1A1A] rounded-2xl border border-green-500/30 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="w-6 h-6 rounded-md bg-green-500 flex items-center justify-center flex-shrink-0">
+                    <Navigation className="w-3.5 h-3.5 text-white" />
+                  </div>
+                  <h3 className="text-sm font-bold text-white">Start Point</h3>
+                  {startPoint && (
+                    <button
+                      onClick={() => setStartPoint(null)}
+                      className="ml-auto text-gray-600 hover:text-red-400 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                {startPoint ? (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-green-500/10 border border-green-500/20 rounded-xl">
+                    <MapPin className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                    <p className="text-sm text-white font-medium truncate flex-1">
+                      {startPoint.name?.split(",")[0]}
+                    </p>
+                    <span className="text-xs font-bold text-green-400 bg-green-500/20 px-1.5 py-0.5 rounded">
+                      SET
+                    </span>
+                  </div>
+                ) : (
+                  <input
+                    ref={startPointRef}
+                    type="text"
+                    placeholder="Search start location..."
+                    className="w-full px-4 py-2.5 bg-black border border-green-500/30 rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-green-500 text-sm"
+                  />
+                )}
+              </div>
+
               {/* Search */}
               <div className="bg-[#1A1A1A] rounded-2xl border border-[#333] p-4">
                 <div className="flex items-center justify-between mb-3">
@@ -2373,20 +2624,13 @@ const RouteOptimizer = () => {
                               </select>
                             )}
 
-                            {/* Delivery mode per-stop actions */}
+                            {/* Delivery mode per-stop actions — only for non-current stops */}
                             {deliveryMode &&
                               status !== "delivered" &&
                               status !== "disrupted" &&
-                              status !== "redirected" && (
+                              status !== "redirected" &&
+                              !isCurrentStop && (
                                 <div className="flex gap-1 mt-1 flex-wrap">
-                                  {isCurrentStop && (
-                                    <button
-                                      onClick={() => markStopDelivered(i)}
-                                      className="px-2 py-0.5 bg-green-500/10 border border-green-500/30 text-green-400 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-green-500/20 transition-colors"
-                                    >
-                                      <CheckCircle className="w-3 h-3" /> Done
-                                    </button>
-                                  )}
                                   <button
                                     onClick={() => {
                                       setDisruptionTarget(i);
@@ -2394,7 +2638,8 @@ const RouteOptimizer = () => {
                                     }}
                                     className="px-2 py-0.5 bg-red-500/10 border border-red-500/30 text-red-400 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-red-500/20 transition-colors"
                                   >
-                                    <ShieldAlert className="w-3 h-3" /> Issue
+                                    <ShieldAlert className="w-3 h-3" /> Report
+                                    Issue
                                   </button>
                                   <button
                                     onClick={() =>
@@ -2403,7 +2648,7 @@ const RouteOptimizer = () => {
                                     className="px-2 py-0.5 bg-purple-500/10 border border-purple-500/30 text-purple-400 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-purple-500/20 transition-colors"
                                   >
                                     <PhoneForwarded className="w-3 h-3" /> Hand
-                                    off
+                                    Off
                                   </button>
                                 </div>
                               )}
@@ -2447,44 +2692,171 @@ const RouteOptimizer = () => {
                       <Play className="w-4 h-4" /> Start Delivery
                     </button>
                   )}
-                  {deliveryMode && (
-                    <div className="space-y-2 mt-2">
-                      <div className="p-3 bg-green-500/5 border border-green-500/20 rounded-xl">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Radio className="w-3.5 h-3.5 text-green-400 animate-pulse" />
-                          <span className="text-xs font-bold text-green-400">
-                            Delivery in progress
-                          </span>
+                  {deliveryMode &&
+                    (() => {
+                      const currentStop =
+                        routeResults?.optimizedRoute?.[currentStopIdx];
+                      const totalStops = markers.length;
+                      const doneCount = completedStops.size;
+                      const progressPct = Math.round(
+                        (doneCount / totalStops) * 100,
+                      );
+
+                      return (
+                        <div className="space-y-2 mt-2">
+                          {/* ── CURRENT STOP HERO CARD ── */}
+                          {currentStop && (
+                            <div className="rounded-xl border border-[#FFC000]/30 bg-[#FFC000]/5 overflow-hidden">
+                              {/* Header strip */}
+                              <div className="flex items-center justify-between px-3 py-2 border-b border-[#FFC000]/20 bg-[#FFC000]/10">
+                                <div className="flex items-center gap-2">
+                                  <Radio className="w-3 h-3 text-[#FFC000] animate-pulse" />
+                                  <span className="text-xs font-bold text-[#FFC000] uppercase tracking-wide">
+                                    Now Delivering
+                                  </span>
+                                </div>
+                                <span className="text-xs text-gray-400 font-medium">
+                                  Stop {currentStopIdx + 1} of {totalStops}
+                                </span>
+                              </div>
+
+                              {/* Stop address */}
+                              <div className="px-3 py-2.5">
+                                <div className="flex items-start gap-2">
+                                  <div
+                                    className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5 text-xs font-bold text-black"
+                                    style={{
+                                      backgroundColor: getPriorityMarkerColor(
+                                        currentStop.priority,
+                                      ),
+                                    }}
+                                  >
+                                    {currentStopIdx + 1}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-bold text-white leading-tight">
+                                      {currentStop.name?.split(",")[0]}
+                                    </p>
+                                    <p className="text-xs text-gray-500 mt-0.5 truncate">
+                                      {currentStop.name
+                                        ?.split(",")
+                                        .slice(1, 3)
+                                        .join(",")
+                                        .trim()}
+                                    </p>
+                                    <span
+                                      className={`inline-block text-xs font-bold px-1.5 py-0.5 rounded mt-1 ${PRIORITIES[currentStop.priority]?.bg} ${PRIORITIES[currentStop.priority]?.color} ${PRIORITIES[currentStop.priority]?.border} border`}
+                                    >
+                                      {PRIORITIES[currentStop.priority]?.label}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Action row */}
+                              <div className="grid grid-cols-3 gap-1.5 px-3 pb-3">
+                                {/* Navigate to this stop — opens native Google Maps app */}
+                                <button
+                                  onClick={() =>
+                                    openNativeNavigation(currentStop)
+                                  }
+                                  className="col-span-3 flex items-center justify-center gap-2 py-2.5 bg-[#FFC000] hover:bg-[#FFD040] text-black text-sm font-bold rounded-lg transition-all shadow-md shadow-[#FFC000]/20 active:scale-95"
+                                >
+                                  <Navigation className="w-4 h-4" />
+                                  Navigate to This Stop
+                                </button>
+                                {/* Mark delivered */}
+                                <button
+                                  onClick={() =>
+                                    markStopDelivered(currentStopIdx)
+                                  }
+                                  className="flex flex-col items-center gap-1 py-2 bg-green-500/10 hover:bg-green-500/20 border border-green-500/30 text-green-400 rounded-lg text-xs font-bold transition-all"
+                                >
+                                  <CheckCircle className="w-4 h-4" />
+                                  Done
+                                </button>
+                                {/* Report issue */}
+                                <button
+                                  onClick={() => {
+                                    setDisruptionTarget(currentStopIdx);
+                                    setShowDisruptionModal(true);
+                                  }}
+                                  className="flex flex-col items-center gap-1 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 rounded-lg text-xs font-bold transition-all"
+                                >
+                                  <ShieldAlert className="w-4 h-4" />
+                                  Issue
+                                </button>
+                                {/* Hand off */}
+                                <button
+                                  onClick={() =>
+                                    flagForRedirection(
+                                      currentStopIdx,
+                                      "Address issue",
+                                    )
+                                  }
+                                  className="flex flex-col items-center gap-1 py-2 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-400 rounded-lg text-xs font-bold transition-all"
+                                >
+                                  <PhoneForwarded className="w-4 h-4" />
+                                  Hand Off
+                                </button>
+
+                                {/* View full remaining route on the in-app map */}
+                                <button
+                                  onClick={showFullRouteOnMap}
+                                  className="col-span-3 flex items-center justify-center gap-2 py-2 bg-black/40 hover:bg-white/5 border border-[#333] hover:border-[#FFC000]/40 text-gray-400 hover:text-[#FFC000] text-xs font-bold rounded-lg transition-all"
+                                >
+                                  <Route className="w-3.5 h-3.5" />
+                                  View Full Remaining Route on Map
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* ── PROGRESS BAR ── */}
+                          <div className="px-3 py-2.5 bg-[#1A1A1A] border border-[#2a2a2a] rounded-xl">
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-xs text-gray-400 font-medium">
+                                Session Progress
+                              </span>
+                              <span className="text-xs font-bold text-white">
+                                {doneCount}/{totalStops} stops
+                              </span>
+                            </div>
+                            <div className="h-2 bg-[#2a2a2a] rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-green-500 rounded-full transition-all duration-500"
+                                style={{ width: `${progressPct}%` }}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between mt-1.5">
+                              <span className="text-xs text-gray-600">
+                                {progressPct}% complete
+                              </span>
+                              {redirectionLog.length > 0 && (
+                                <span className="text-xs text-purple-400 font-medium">
+                                  {redirectionLog.length} handed off
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* ── SECONDARY ACTIONS ── */}
+                          <button
+                            onClick={() => setPriorityUpdateMode(true)}
+                            className="w-full px-4 py-2.5 bg-[#FFC000]/10 hover:bg-[#FFC000]/20 border border-[#FFC000]/30 text-[#FFC000] font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all"
+                          >
+                            <TrendingUp className="w-3.5 h-3.5" /> Update Stop
+                            Priorities
+                          </button>
+                          <button
+                            onClick={endDelivery}
+                            className="w-full px-4 py-2.5 bg-transparent hover:bg-red-500/5 text-red-500 border border-red-500/30 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all"
+                          >
+                            <XCircle className="w-3.5 h-3.5" /> End Session
+                          </button>
                         </div>
-                        <p className="text-xs text-gray-500">
-                          {completedStops.size}/{markers.length} stops done
-                          {redirectionLog.length > 0 &&
-                            ` · ${redirectionLog.length} handoffs`}
-                        </p>
-                        {/* Progress bar */}
-                        <div className="mt-2 h-1.5 bg-[#333] rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-green-500 rounded-full transition-all"
-                            style={{
-                              width: `${(completedStops.size / markers.length) * 100}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setPriorityUpdateMode(true)}
-                        className="w-full px-4 py-2.5 bg-[#FFC000] hover:bg-[#E5AC00] text-black font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all"
-                      >
-                        <TrendingUp className="w-3.5 h-3.5" /> Update Priorities
-                      </button>
-                      <button
-                        onClick={endDelivery}
-                        className="w-full px-4 py-2.5 bg-[#1A1A1A] hover:bg-[#252525] text-red-400 border border-red-500/30 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all"
-                      >
-                        <XCircle className="w-3.5 h-3.5" /> End Delivery Session
-                      </button>
-                    </div>
-                  )}
+                      );
+                    })()}
                 </div>
               )}
             </div>
@@ -2963,83 +3335,247 @@ const RouteOptimizer = () => {
                   )}
 
                   {/* ── DYNAMIC RE-ROUTING PANEL ── */}
-                  {(rerouteResult || disruptions.length > 0) && (
+                  {(rerouteResult ||
+                    rerouteLoading ||
+                    disruptions.length > 0) && (
                     <div className="bg-[#1A1A1A] rounded-2xl border border-[#333] overflow-hidden">
-                      <div className="p-4 border-b border-[#333]">
+                      {/* Panel header */}
+                      <div className="px-4 py-3 border-b border-[#333] flex items-center justify-between">
                         <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                          <Repeat className="w-4 h-4 text-red-400" /> Dynamic
-                          Re-routing
+                          <Repeat className="w-4 h-4 text-red-400" />
+                          Dynamic Re-routing
                         </h2>
+                        {disruptions.length > 0 && (
+                          <span className="text-xs font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full">
+                            {disruptions.length} disruption
+                            {disruptions.length !== 1 ? "s" : ""}
+                          </span>
+                        )}
                       </div>
 
-                      {disruptions.length > 0 && (
-                        <div className="divide-y divide-[#222]">
-                          {disruptions.map((d, i) => (
-                            <div
-                              key={i}
-                              className="px-4 py-3 flex items-start gap-3"
-                            >
-                              <div className="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center flex-shrink-0">
-                                <Construction className="w-4 h-4 text-red-400" />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs text-white font-bold">
-                                  {d.description}
-                                </p>
-                                <p className="text-xs text-gray-500 mt-0.5">
-                                  Stop {d.stopIndex + 1} ·{" "}
-                                  {d.timestamp.toLocaleTimeString()}
-                                </p>
-                              </div>
-                              <span className="text-xs font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-lg flex-shrink-0">
-                                Skipped
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
+                      {/* ── LOADING STATE ── */}
                       {rerouteLoading && (
-                        <div className="p-4 flex items-center gap-2 text-sm text-[#FFC000]">
-                          <RefreshCw className="w-4 h-4 animate-spin" />{" "}
-                          Recalculating route...
-                        </div>
-                      )}
-
-                      {rerouteResult && !rerouteLoading && (
-                        <div className="p-4 bg-green-500/5 border-t border-[#333]">
-                          <p className="text-xs font-bold text-green-400 flex items-center gap-2 mb-2">
-                            <CheckCircle className="w-3.5 h-3.5" /> Route
-                            recalculated successfully
-                          </p>
-                          <p className="text-xs text-gray-400">
-                            Skipped:{" "}
-                            <span className="text-white font-medium">
-                              {rerouteResult.skippedStop?.name?.split(",")[0]}
-                            </span>
-                          </p>
-                          <div className="flex gap-4 mt-2">
-                            <div>
-                              <p className="text-xs text-gray-500">New ETA</p>
-                              <p className="text-sm font-bold text-white">
-                                {formatDuration(rerouteResult.rerouteDuration)}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">
-                                New Distance
-                              </p>
-                              <p className="text-sm font-bold text-white">
-                                {formatDistance(rerouteResult.rerouteDistance)}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-gray-500">Remaining</p>
-                              <p className="text-sm font-bold text-white">
-                                {rerouteResult.newRoute.length} stops
-                              </p>
+                        <div className="p-6 flex flex-col items-center gap-3 border-b border-[#2a2a2a]">
+                          <div className="relative w-14 h-14">
+                            <div className="absolute inset-0 rounded-full border-2 border-[#FFC000]/15" />
+                            <div className="absolute inset-0 rounded-full border-t-2 border-[#FFC000] animate-spin" />
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <Repeat className="w-5 h-5 text-[#FFC000]" />
                             </div>
                           </div>
+                          <div className="text-center">
+                            <p className="text-sm font-bold text-white">
+                              Recalculating Route
+                            </p>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Finding fastest path around disruption…
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ── REROUTE RESULT ── */}
+                      {rerouteResult &&
+                        !rerouteLoading &&
+                        (() => {
+                          const timeDelta =
+                            rerouteResult.rerouteDuration -
+                            routeResults.totalDuration;
+                          const distDelta =
+                            rerouteResult.rerouteDistance -
+                            routeResults.totalDistance;
+                          const timeSaved = timeDelta < 0;
+                          const distSaved = distDelta < 0;
+                          return (
+                            <div className="p-4 border-b border-[#2a2a2a]">
+                              {/* Success header row */}
+                              <div className="flex items-start justify-between mb-3">
+                                <div className="flex items-center gap-2.5">
+                                  <div className="w-8 h-8 bg-green-500/15 border border-green-500/30 rounded-xl flex items-center justify-center flex-shrink-0">
+                                    <CheckCircle className="w-4 h-4 text-green-400" />
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-bold text-white">
+                                      Route Recalculated
+                                    </p>
+                                    <p className="text-xs text-gray-500">
+                                      {rerouteResult.timestamp.toLocaleTimeString()}
+                                    </p>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => setRerouteResult(null)}
+                                  className="text-gray-600 hover:text-gray-400 transition-colors mt-0.5"
+                                >
+                                  <XCircle className="w-4 h-4" />
+                                </button>
+                              </div>
+
+                              {/* Skipped stop pill */}
+                              <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-red-500/5 border border-red-500/20 rounded-xl">
+                                <XCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                                <p className="text-xs text-gray-400 min-w-0 truncate">
+                                  Skipped:{" "}
+                                  <span className="text-white font-bold">
+                                    {
+                                      rerouteResult.skippedStop?.name?.split(
+                                        ",",
+                                      )[0]
+                                    }
+                                  </span>
+                                </p>
+                              </div>
+
+                              {/* Before → After comparison */}
+                              <div className="grid grid-cols-2 gap-2 mb-3">
+                                {/* Before */}
+                                <div className="bg-black/40 rounded-xl p-3 border border-[#2a2a2a]">
+                                  <p className="text-xs text-gray-600 mb-1.5 font-medium uppercase tracking-wide">
+                                    Before
+                                  </p>
+                                  <p className="text-base font-bold text-gray-400">
+                                    {formatDuration(routeResults.totalDuration)}
+                                  </p>
+                                  <p className="text-xs text-gray-600 mt-0.5">
+                                    {formatDistance(routeResults.totalDistance)}
+                                  </p>
+                                </div>
+                                {/* After */}
+                                <div className="bg-green-500/5 border border-green-500/20 rounded-xl p-3">
+                                  <p className="text-xs text-green-600 mb-1.5 font-medium uppercase tracking-wide">
+                                    After
+                                  </p>
+                                  <p
+                                    className={`text-base font-bold ${timeSaved ? "text-green-400" : "text-red-400"}`}
+                                  >
+                                    {formatDuration(
+                                      rerouteResult.rerouteDuration,
+                                    )}
+                                  </p>
+                                  <p className="text-xs text-gray-400 mt-0.5">
+                                    {formatDistance(
+                                      rerouteResult.rerouteDistance,
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Delta badges */}
+                              <div className="flex items-center gap-2 mb-3">
+                                <span
+                                  className={`inline-flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg border ${
+                                    timeSaved
+                                      ? "text-green-400 bg-green-500/10 border-green-500/20"
+                                      : "text-red-400 bg-red-500/10 border-red-500/20"
+                                  }`}
+                                >
+                                  <Clock className="w-3 h-3" />
+                                  {timeSaved ? "−" : "+"}
+                                  {formatDuration(Math.abs(timeDelta))}
+                                </span>
+                                <span
+                                  className={`inline-flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg border ${
+                                    distSaved
+                                      ? "text-green-400 bg-green-500/10 border-green-500/20"
+                                      : "text-red-400 bg-red-500/10 border-red-500/20"
+                                  }`}
+                                >
+                                  <Navigation className="w-3 h-3" />
+                                  {distSaved ? "−" : "+"}
+                                  {formatDistance(Math.abs(distDelta))}
+                                </span>
+                              </div>
+
+                              {/* Remaining stops count */}
+                              <div className="flex items-center justify-between px-3 py-2 bg-black/40 border border-[#2a2a2a] rounded-xl">
+                                <div className="flex items-center gap-2">
+                                  <Milestone className="w-3.5 h-3.5 text-[#FFC000]" />
+                                  <span className="text-xs text-gray-400">
+                                    Remaining stops
+                                  </span>
+                                </div>
+                                <span className="text-sm font-bold text-white">
+                                  {rerouteResult.newRoute.length}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                      {/* ── DISRUPTIONS LIST ── */}
+                      {disruptions.length > 0 && (
+                        <div className="divide-y divide-[#1f1f1f]">
+                          {disruptions.map((d, i) => {
+                            const typeConfig = {
+                              closure: {
+                                Icon: XCircle,
+                                color: "text-red-400",
+                                bg: "bg-red-500/10",
+                                border: "border-red-500/25",
+                                label: "Road Closure",
+                              },
+                              accident: {
+                                Icon: ShieldAlert,
+                                color: "text-orange-400",
+                                bg: "bg-orange-500/10",
+                                border: "border-orange-500/25",
+                                label: "Accident",
+                              },
+                              flooding: {
+                                Icon: Droplets,
+                                color: "text-blue-400",
+                                bg: "bg-blue-500/10",
+                                border: "border-blue-500/25",
+                                label: "Flooding",
+                              },
+                              construction: {
+                                Icon: Construction,
+                                color: "text-yellow-400",
+                                bg: "bg-yellow-500/10",
+                                border: "border-yellow-500/25",
+                                label: "Roadworks",
+                              },
+                            };
+                            const { Icon, color, bg, border, label } =
+                              typeConfig[d.type] ?? typeConfig.construction;
+                            return (
+                              <div
+                                key={i}
+                                className="px-4 py-3 flex items-start gap-3"
+                              >
+                                <div
+                                  className={`w-8 h-8 rounded-lg ${bg} border ${border} flex items-center justify-center flex-shrink-0 mt-0.5`}
+                                >
+                                  <Icon className={`w-4 h-4 ${color}`} />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-1.5 mb-0.5">
+                                    <span
+                                      className={`text-xs font-bold ${color}`}
+                                    >
+                                      {label}
+                                    </span>
+                                    <span className="text-gray-700 text-xs">
+                                      ·
+                                    </span>
+                                    <span className="text-xs text-gray-500">
+                                      Stop {d.stopIndex + 1}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-gray-400 leading-relaxed">
+                                    {d.description ||
+                                      "Route disruption reported — stop skipped"}
+                                  </p>
+                                  <p className="text-xs text-gray-600 mt-0.5">
+                                    {d.timestamp.toLocaleTimeString()}
+                                  </p>
+                                </div>
+                                <span className="text-xs font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-lg flex-shrink-0 mt-0.5">
+                                  Skipped
+                                </span>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -3083,47 +3619,139 @@ const RouteOptimizer = () => {
                             </div>
                           ) : nearbyPostmen.filter((p) => p.is_available)
                               .length === 0 ? (
-                            <p className="text-xs text-gray-500 py-2">
-                              No available postmen within 15 km.
-                            </p>
+                            <div className="flex flex-col items-center gap-2 py-4 text-center">
+                              <div className="w-10 h-10 rounded-full bg-[#2a2a2a] flex items-center justify-center">
+                                <Users className="w-5 h-5 text-gray-600" />
+                              </div>
+                              <p className="text-xs text-gray-500">
+                                No available postmen within 15 km.
+                              </p>
+                            </div>
                           ) : (
                             <div className="space-y-2">
                               {nearbyPostmen
                                 .filter((p) => p.is_available)
                                 .slice(0, 4)
-                                .map((postman) => (
-                                  <button
-                                    key={postman.postman_id}
-                                    onClick={() =>
-                                      assignRedirection(
-                                        showRedirectPanel,
-                                        postman,
-                                      )
-                                    }
-                                    className="w-full flex items-center gap-3 px-3 py-2.5 bg-black/40 hover:bg-purple-500/10 border border-[#333] hover:border-purple-500/30 rounded-xl transition-all text-left"
-                                  >
-                                    <div className="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center flex-shrink-0">
-                                      <UserCheck className="w-4 h-4 text-purple-400" />
+                                .map((postman) => {
+                                  // Generate initials + deterministic avatar color
+                                  const initials = (postman.name || "?")
+                                    .split(" ")
+                                    .map((w) => w[0])
+                                    .slice(0, 2)
+                                    .join("")
+                                    .toUpperCase();
+                                  const avatarColors = [
+                                    ["#6366F1", "#3730A3"],
+                                    ["#8B5CF6", "#5B21B6"],
+                                    ["#EC4899", "#9D174D"],
+                                    ["#14B8A6", "#0F766E"],
+                                  ];
+                                  const colorPair =
+                                    avatarColors[
+                                      (postman.postman_id?.charCodeAt(0) ?? 0) %
+                                        avatarColors.length
+                                    ];
+                                  // Workload bar: deliveries_left out of an assumed 20 max
+                                  const workloadMax = 20;
+                                  const workloadPct = Math.min(
+                                    100,
+                                    Math.round(
+                                      ((postman.deliveries_left ?? 0) /
+                                        workloadMax) *
+                                        100,
+                                    ),
+                                  );
+                                  const distNum =
+                                    parseFloat(postman.distance_km) || 0;
+                                  const distColor =
+                                    distNum < 3
+                                      ? "text-green-400"
+                                      : distNum < 8
+                                        ? "text-[#FFC000]"
+                                        : "text-red-400";
+
+                                  return (
+                                    <div
+                                      key={postman.postman_id}
+                                      className="p-3 bg-black/40 border border-[#2a2a2a] hover:border-purple-500/30 rounded-xl transition-all group"
+                                    >
+                                      {/* Top row: avatar + info + distance */}
+                                      <div className="flex items-center gap-3 mb-2.5">
+                                        {/* Avatar */}
+                                        <div
+                                          className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 text-sm font-bold text-white shadow-lg"
+                                          style={{
+                                            background: `linear-gradient(135deg, ${colorPair[0]}, ${colorPair[1]})`,
+                                          }}
+                                        >
+                                          {initials}
+                                        </div>
+                                        {/* Name + zone */}
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-sm font-bold text-white truncate">
+                                            {postman.name}
+                                          </p>
+                                          <p className="text-xs text-gray-500 truncate">
+                                            {postman.zone || postman.email}
+                                          </p>
+                                        </div>
+                                        {/* Distance badge */}
+                                        <div className="text-right flex-shrink-0">
+                                          <p
+                                            className={`text-base font-bold ${distColor}`}
+                                          >
+                                            {postman.distance_km} km
+                                          </p>
+                                          <p className="text-xs text-green-400 font-medium">
+                                            Available
+                                          </p>
+                                        </div>
+                                      </div>
+
+                                      {/* Workload bar */}
+                                      <div className="mb-2.5">
+                                        <div className="flex items-center justify-between mb-1">
+                                          <span className="text-xs text-gray-600">
+                                            Workload
+                                          </span>
+                                          <span className="text-xs text-gray-400 font-medium">
+                                            {postman.deliveries_left ?? "—"}{" "}
+                                            stops left
+                                          </span>
+                                        </div>
+                                        <div className="h-1.5 bg-[#2a2a2a] rounded-full overflow-hidden">
+                                          <div
+                                            className="h-full rounded-full transition-all"
+                                            style={{
+                                              width: `${workloadPct}%`,
+                                              backgroundColor:
+                                                workloadPct > 70
+                                                  ? "#EF4444"
+                                                  : workloadPct > 40
+                                                    ? "#FFC000"
+                                                    : "#22C55E",
+                                            }}
+                                          />
+                                        </div>
+                                      </div>
+
+                                      {/* Assign button */}
+                                      <button
+                                        onClick={() =>
+                                          assignRedirection(
+                                            showRedirectPanel,
+                                            postman,
+                                          )
+                                        }
+                                        className="w-full py-2 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-300 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5"
+                                      >
+                                        <UserCheck className="w-3.5 h-3.5" />
+                                        Assign Stop {showRedirectPanel +
+                                          1} to {initials}
+                                      </button>
                                     </div>
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-xs text-white font-bold">
-                                        {postman.name}
-                                      </p>
-                                      <p className="text-xs text-gray-500">
-                                        {postman.zone || postman.email} ·{" "}
-                                        {postman.deliveries_left} stops left
-                                      </p>
-                                    </div>
-                                    <div className="text-right flex-shrink-0">
-                                      <p className="text-xs font-bold text-purple-400">
-                                        {postman.distance_km} km
-                                      </p>
-                                      <p className="text-xs text-green-400">
-                                        Available
-                                      </p>
-                                    </div>
-                                  </button>
-                                ))}
+                                  );
+                                })}
                             </div>
                           )}
                           <button
@@ -3272,23 +3900,47 @@ const RouteOptimizer = () => {
                             ))}
                           </div>
 
-                          {startPoint && deliveryMode && (
-                            <div className="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-xl">
-                              <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white bg-green-500 flex-shrink-0">
-                                <Navigation className="w-4 h-4" />
+                          {startPoint && (
+                            <>
+                              <div className="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-xl">
+                                <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white bg-green-500 flex-shrink-0">
+                                  <Navigation className="w-4 h-4" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-white font-bold truncate">
+                                    {startPoint.name?.split(",")[0] ||
+                                      "Start Location"}
+                                  </p>
+                                  <p className="text-xs text-green-400">
+                                    Start Point
+                                  </p>
+                                </div>
+                                <div className="px-2 py-1 bg-green-500/20 rounded text-xs font-bold text-green-400">
+                                  START
+                                </div>
                               </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm text-white font-bold">
-                                  {startPoint.name || "Start Location"}
-                                </p>
-                                <p className="text-xs text-green-400">
-                                  Delivery Start Point
-                                </p>
+                              {/* Connector arrow */}
+                              <div className="flex items-center gap-3 px-1 py-0.5">
+                                <div className="w-8 flex justify-center flex-shrink-0">
+                                  <div className="flex flex-col items-center gap-[3px]">
+                                    <div className="w-px h-2 bg-green-500/60" />
+                                    <div className="w-px h-2 bg-green-500/40" />
+                                    <div
+                                      className="w-0 h-0"
+                                      style={{
+                                        borderLeft: "4px solid transparent",
+                                        borderRight: "4px solid transparent",
+                                        borderTop:
+                                          "5px solid rgba(34,197,94,0.55)",
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <span className="text-[10px] text-gray-600 font-medium">
+                                  Optimized route begins
+                                </span>
                               </div>
-                              <div className="px-2 py-1 bg-green-500/20 rounded text-xs font-bold text-green-400">
-                                START
-                              </div>
-                            </div>
+                            </>
                           )}
 
                           {["urgent", "high", "normal", "low"].map(
@@ -3359,23 +4011,47 @@ const RouteOptimizer = () => {
                         </div>
                       ) : (
                         <div className="space-y-1.5">
-                          {startPoint && deliveryMode && (
-                            <div className="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-xl mb-2">
-                              <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-green-500 flex-shrink-0">
-                                <Navigation className="w-4 h-4 text-white" />
+                          {startPoint && (
+                            <>
+                              <div className="flex items-center gap-3 p-3 bg-green-500/10 border border-green-500/30 rounded-xl">
+                                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-green-500 flex-shrink-0">
+                                  <Navigation className="w-4 h-4 text-white" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-white font-bold truncate">
+                                    {startPoint.name?.split(",")[0] ||
+                                      "Start Location"}
+                                  </p>
+                                  <p className="text-xs text-green-400">
+                                    Start Point
+                                  </p>
+                                </div>
+                                <div className="px-2 py-1 bg-green-500/20 rounded text-xs font-bold text-green-400">
+                                  START
+                                </div>
                               </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm text-white font-bold">
-                                  {startPoint.name || "Start Location"}
-                                </p>
-                                <p className="text-xs text-green-400">
-                                  Delivery Start Point
-                                </p>
+                              {/* Connector arrow */}
+                              <div className="flex items-center gap-3 px-1 py-0.5">
+                                <div className="w-6 flex justify-center flex-shrink-0">
+                                  <div className="flex flex-col items-center gap-[3px]">
+                                    <div className="w-px h-2 bg-green-500/60" />
+                                    <div className="w-px h-2 bg-green-500/40" />
+                                    <div
+                                      className="w-0 h-0"
+                                      style={{
+                                        borderLeft: "4px solid transparent",
+                                        borderRight: "4px solid transparent",
+                                        borderTop:
+                                          "5px solid rgba(34,197,94,0.55)",
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <span className="text-[10px] text-gray-600 font-medium">
+                                  Optimized route begins
+                                </span>
                               </div>
-                              <div className="px-2 py-1 bg-green-500/20 rounded text-xs font-bold text-green-400">
-                                START
-                              </div>
-                            </div>
+                            </>
                           )}
                           {routeResults.optimizedRoute.map((loc, i) => (
                             <div
