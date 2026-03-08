@@ -435,6 +435,14 @@ const RouteOptimizer = () => {
   // ── Feature: Dynamic Priority Updates ──
   const [priorityUpdateMode, setPriorityUpdateMode] = useState(false);
   const [priorityPreview, setPriorityPreview] = useState(null); // { stopIndex, newPriority, beforeDuration, beforeDistance, afterDuration, afterDistance, calculating }
+
+  // ── Feature: Recipient Relocation Re-routing ──
+  const [showRelocationModal, setShowRelocationModal] = useState(false);
+  const [relocationTarget, setRelocationTarget] = useState(null); // stop index
+  const [relocationStep, setRelocationStep] = useState("input"); // 'input' | 'decision'
+  const [newRelocationAddress, setNewRelocationAddress] = useState(null); // { lat, lng, name }
+  const [detourInfo, setDetourInfo] = useState(null); // { distanceKm, canSelfHandle }
+  const [relocationEvents, setRelocationEvents] = useState([]);
   const [startPoint, setStartPoint] = useState(null);
   const [rerouteTrigger, setRerouteTrigger] = useState(0);
   const [startMarker, setStartMarker] = useState(null);
@@ -448,10 +456,34 @@ const RouteOptimizer = () => {
   const markersRef = useRef([]);
   const polylineRefs = useRef([]);
   const startConnectorRef = useRef(null);
+  const relocationInputRef = useRef(null);
 
   useEffect(() => {
     markersRef.current = markers;
   }, [markers]);
+
+  // ─── RELOCATION ADDRESS AUTOCOMPLETE ────────────────────────────────────
+  useEffect(() => {
+    if (!showRelocationModal || relocationStep !== "input" || !window.google)
+      return;
+    const timer = setTimeout(() => {
+      if (!relocationInputRef.current) return;
+      const ac = new window.google.maps.places.Autocomplete(
+        relocationInputRef.current,
+        { types: ["geocode"] },
+      );
+      ac.addListener("place_changed", () => {
+        const place = ac.getPlace();
+        if (!place?.geometry) return;
+        const loc = place.geometry.location;
+        let name = place.name || "";
+        if (place.formatted_address && place.formatted_address !== place.name)
+          name = `${place.name}, ${place.formatted_address}`;
+        setNewRelocationAddress({ lat: loc.lat(), lng: loc.lng(), name });
+      });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [showRelocationModal, relocationStep]);
 
   // ─── GPS BROADCASTING ───────────────────────────────────────────────────
   useEffect(() => {
@@ -2093,6 +2125,125 @@ const RouteOptimizer = () => {
     return "idle";
   };
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // ║  FEATURE 5 — RECIPIENT RELOCATION RE-ROUTING
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Open the relocation modal for a given stop */
+  const openRelocationModal = (stopIndex) => {
+    setRelocationTarget(stopIndex);
+    setRelocationStep("input");
+    setNewRelocationAddress(null);
+    setDetourInfo(null);
+    setShowRelocationModal(true);
+  };
+
+  /** Called after the postman confirms the new address — compute detour distance */
+  const calculateRelocationDetour = () => {
+    if (!newRelocationAddress || relocationTarget === null || !routeResults)
+      return;
+    const currentStop = routeResults.optimizedRoute[relocationTarget];
+    const distanceKm = haversineKm(
+      { lat: currentStop.lat, lng: currentStop.lng },
+      { lat: newRelocationAddress.lat, lng: newRelocationAddress.lng },
+    );
+    // ≤ 2 km → self-handle recommended; > 2 km → transfer recommended
+    setDetourInfo({ distanceKm, canSelfHandle: distanceKm <= 2 });
+    setRelocationStep("decision");
+  };
+
+  /** Postman will handle the relocated stop themselves — update stop in route and re-optimise */
+  const confirmSelfHandleRelocation = () => {
+    if (!routeResults || relocationTarget === null || !newRelocationAddress)
+      return;
+
+    const updatedRoute = routeResults.optimizedRoute.map((stop, idx) =>
+      idx === relocationTarget
+        ? {
+            ...stop,
+            name: newRelocationAddress.name,
+            lat: newRelocationAddress.lat,
+            lng: newRelocationAddress.lng,
+          }
+        : stop,
+    );
+
+    setRouteResults((prev) => ({ ...prev, optimizedRoute: updatedRoute }));
+
+    // Move the map marker to the new position
+    const m = markers[relocationTarget];
+    if (m?.marker && window.google) {
+      m.marker.setPosition({
+        lat: newRelocationAddress.lat,
+        lng: newRelocationAddress.lng,
+      });
+      m.marker.setTitle(newRelocationAddress.name);
+      // Re-label icon to orange to show it changed
+      m.marker.setIcon({
+        path: window.google.maps.SymbolPath.CIRCLE,
+        scale: 14,
+        fillColor: "#F97316",
+        fillOpacity: 1,
+        strokeColor: "#000",
+        strokeWeight: 2,
+      });
+    }
+
+    // Log event
+    setRelocationEvents((prev) => [
+      {
+        id: Date.now(),
+        stopIndex: relocationTarget,
+        oldAddress: routeResults.optimizedRoute[relocationTarget].name,
+        newAddress: newRelocationAddress.name,
+        detourKm: detourInfo?.distanceKm,
+        action: "self_handle",
+        timestamp: new Date(),
+      },
+      ...prev,
+    ]);
+
+    // Trigger full re-optimisation with the updated stop
+    rerouteWithNewPriorities(updatedRoute);
+
+    setShowRelocationModal(false);
+    setRelocationTarget(null);
+  };
+
+  /** Postman cannot reach new address — hand off to nearby postman */
+  const confirmTransferRelocation = () => {
+    if (relocationTarget === null) return;
+
+    // Log event before closing modal
+    if (routeResults && newRelocationAddress) {
+      setRelocationEvents((prev) => [
+        {
+          id: Date.now(),
+          stopIndex: relocationTarget,
+          oldAddress: routeResults.optimizedRoute[relocationTarget].name,
+          newAddress: newRelocationAddress.name,
+          detourKm: detourInfo?.distanceKm,
+          action: "transfer",
+          timestamp: new Date(),
+        },
+        ...prev,
+      ]);
+    }
+
+    setShowRelocationModal(false);
+    // Open the existing inter-postman redirect panel for this stop
+    flagForRedirection(relocationTarget, "Recipient relocated");
+  };
+
+  /** Dismiss relocation modal with no action */
+  const cancelRelocationModal = () => {
+    setShowRelocationModal(false);
+    setRelocationTarget(null);
+    setNewRelocationAddress(null);
+    setDetourInfo(null);
+    setRelocationStep("input");
+  };
+
   const rainPoints = weatherData.filter((w) => w.severity >= 2);
   const stormPoints = weatherData.filter((w) => w.severity >= 4);
 
@@ -2754,13 +2905,13 @@ const RouteOptimizer = () => {
                               </div>
 
                               {/* Action row */}
-                              <div className="grid grid-cols-3 gap-1.5 px-3 pb-3">
+                              <div className="grid grid-cols-2 gap-1.5 px-3 pb-3">
                                 {/* Navigate to this stop — opens native Google Maps app */}
                                 <button
                                   onClick={() =>
                                     openNativeNavigation(currentStop)
                                   }
-                                  className="col-span-3 flex items-center justify-center gap-2 py-2.5 bg-[#FFC000] hover:bg-[#FFD040] text-black text-sm font-bold rounded-lg transition-all shadow-md shadow-[#FFC000]/20 active:scale-95"
+                                  className="col-span-2 flex items-center justify-center gap-2 py-2.5 bg-[#FFC000] hover:bg-[#FFD040] text-black text-sm font-bold rounded-lg transition-all shadow-md shadow-[#FFC000]/20 active:scale-95"
                                 >
                                   <Navigation className="w-4 h-4" />
                                   Navigate to This Stop
@@ -2775,7 +2926,7 @@ const RouteOptimizer = () => {
                                   <CheckCircle className="w-4 h-4" />
                                   Done
                                 </button>
-                                {/* Report issue */}
+                                {/* Report road issue */}
                                 <button
                                   onClick={() => {
                                     setDisruptionTarget(currentStopIdx);
@@ -2786,7 +2937,17 @@ const RouteOptimizer = () => {
                                   <ShieldAlert className="w-4 h-4" />
                                   Issue
                                 </button>
-                                {/* Hand off */}
+                                {/* Recipient relocated — new address re-route */}
+                                <button
+                                  onClick={() =>
+                                    openRelocationModal(currentStopIdx)
+                                  }
+                                  className="flex flex-col items-center gap-1 py-2 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 rounded-lg text-xs font-bold transition-all"
+                                >
+                                  <MapPin className="w-4 h-4" />
+                                  Relocated
+                                </button>
+                                {/* Hand off to another postman */}
                                 <button
                                   onClick={() =>
                                     flagForRedirection(
@@ -2803,7 +2964,7 @@ const RouteOptimizer = () => {
                                 {/* View full remaining route on the in-app map */}
                                 <button
                                   onClick={showFullRouteOnMap}
-                                  className="col-span-3 flex items-center justify-center gap-2 py-2 bg-black/40 hover:bg-white/5 border border-[#333] hover:border-[#FFC000]/40 text-gray-400 hover:text-[#FFC000] text-xs font-bold rounded-lg transition-all"
+                                  className="col-span-2 flex items-center justify-center gap-2 py-2 bg-black/40 hover:bg-white/5 border border-[#333] hover:border-[#FFC000]/40 text-gray-400 hover:text-[#FFC000] text-xs font-bold rounded-lg transition-all"
                                 >
                                   <Route className="w-3.5 h-3.5" />
                                   View Full Remaining Route on Map
@@ -4390,6 +4551,204 @@ const RouteOptimizer = () => {
             >
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ RECIPIENT RELOCATION MODAL ═══ */}
+      {showRelocationModal && relocationTarget !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+          <div className="bg-[#1A1A1A] border border-[#333] rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+            {/* ── Header ── */}
+            <div className="flex items-center gap-3 p-5 border-b border-[#2a2a2a]">
+              <div className="w-10 h-10 bg-orange-500/10 rounded-xl flex items-center justify-center flex-shrink-0">
+                <MapPin className="w-5 h-5 text-orange-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-white">
+                  Recipient Relocated
+                </h3>
+                <p className="text-xs text-gray-500 truncate">
+                  Stop {relocationTarget + 1} —{" "}
+                  {
+                    routeResults?.optimizedRoute[relocationTarget]?.name?.split(
+                      ",",
+                    )[0]
+                  }
+                </p>
+              </div>
+            </div>
+
+            {/* ── STEP 1: Enter new address ── */}
+            {relocationStep === "input" && (
+              <div className="p-5 space-y-4">
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  The recipient has moved. Search for their new address and the
+                  system will calculate whether you can handle it or need to
+                  hand it off.
+                </p>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">
+                    New Delivery Address
+                  </label>
+                  <div className="relative">
+                    <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+                    <input
+                      ref={relocationInputRef}
+                      type="text"
+                      placeholder="Search new address…"
+                      className="w-full pl-9 pr-4 py-3 bg-black border border-[#333] focus:border-orange-500/60 focus:ring-1 focus:ring-orange-500/30 rounded-xl text-white placeholder-gray-600 text-sm outline-none transition-all"
+                    />
+                  </div>
+                  {newRelocationAddress && (
+                    <div className="flex items-start gap-2 p-3 bg-orange-500/5 border border-orange-500/20 rounded-xl">
+                      <CheckCircle className="w-4 h-4 text-orange-400 flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-orange-300 font-medium leading-relaxed">
+                        {newRelocationAddress.name}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={cancelRelocationModal}
+                    className="flex-1 py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium border border-[#333] rounded-xl"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={calculateRelocationDetour}
+                    disabled={!newRelocationAddress}
+                    className="flex-1 py-2.5 text-sm font-bold rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-orange-500 hover:bg-orange-400 text-white flex items-center justify-center gap-2"
+                  >
+                    <Navigation className="w-4 h-4" />
+                    Calculate Detour
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP 2: Decision — self-handle vs transfer ── */}
+            {relocationStep === "decision" && detourInfo && (
+              <div className="p-5 space-y-4">
+                {/* Detour summary */}
+                <div className="p-4 rounded-xl border border-[#2a2a2a] bg-black/40 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400 font-medium">
+                      Detour Distance
+                    </span>
+                    <span
+                      className={`text-lg font-bold ${detourInfo.distanceKm <= 2 ? "text-green-400" : detourInfo.distanceKm <= 5 ? "text-[#FFC000]" : "text-red-400"}`}
+                    >
+                      {detourInfo.distanceKm.toFixed(2)} km
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400 font-medium">
+                      New Address
+                    </span>
+                    <span className="text-xs text-white font-medium text-right max-w-[180px] truncate">
+                      {newRelocationAddress?.name?.split(",")[0]}
+                    </span>
+                  </div>
+                  {/* Threshold bar */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-gray-600">0 km</span>
+                      <span className="text-xs text-gray-600">
+                        Threshold: 2 km
+                      </span>
+                      <span className="text-xs text-gray-600">5+ km</span>
+                    </div>
+                    <div className="h-2 bg-[#2a2a2a] rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.min(100, (detourInfo.distanceKm / 5) * 100)}%`,
+                          backgroundColor:
+                            detourInfo.distanceKm <= 2
+                              ? "#22C55E"
+                              : detourInfo.distanceKm <= 5
+                                ? "#FFC000"
+                                : "#EF4444",
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold ${detourInfo.canSelfHandle ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20"}`}
+                  >
+                    {detourInfo.canSelfHandle ? (
+                      <>
+                        <CheckCircle className="w-3.5 h-3.5" /> Within range —
+                        you can handle this
+                      </>
+                    ) : (
+                      <>
+                        <AlertTriangle className="w-3.5 h-3.5" /> Too far —
+                        transfer recommended
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Action options */}
+                <div className="space-y-2">
+                  <button
+                    onClick={confirmSelfHandleRelocation}
+                    className="w-full flex items-center gap-3 p-3.5 bg-green-500/10 hover:bg-green-500/15 border border-green-500/30 hover:border-green-500/50 rounded-xl transition-all group"
+                  >
+                    <div className="w-9 h-9 rounded-lg bg-green-500/20 flex items-center justify-center flex-shrink-0">
+                      <Navigation className="w-4 h-4 text-green-400" />
+                    </div>
+                    <div className="flex-1 text-left">
+                      <p className="text-sm font-bold text-white">
+                        I'll Handle It
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Update stop to new address and re-optimise my route
+                      </p>
+                    </div>
+                    {detourInfo.canSelfHandle && (
+                      <span className="text-xs font-bold text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full flex-shrink-0">
+                        Recommended
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={confirmTransferRelocation}
+                    className="w-full flex items-center gap-3 p-3.5 bg-purple-500/10 hover:bg-purple-500/15 border border-purple-500/30 hover:border-purple-500/50 rounded-xl transition-all group"
+                  >
+                    <div className="w-9 h-9 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
+                      <PhoneForwarded className="w-4 h-4 text-purple-400" />
+                    </div>
+                    <div className="flex-1 text-left">
+                      <p className="text-sm font-bold text-white">
+                        Transfer to Nearby Postman
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Hand off to a postman covering the new location
+                      </p>
+                    </div>
+                    {!detourInfo.canSelfHandle && (
+                      <span className="text-xs font-bold text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded-full flex-shrink-0">
+                        Recommended
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => setRelocationStep("input")}
+                  className="w-full py-2 text-sm text-gray-600 hover:text-gray-400 transition-colors font-medium"
+                >
+                  ← Change Address
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
