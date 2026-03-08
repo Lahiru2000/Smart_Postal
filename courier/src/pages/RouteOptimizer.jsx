@@ -335,6 +335,7 @@ const RouteOptimizer = () => {
   const [showMap, setShowMap] = useState(false);
   const [locationCount, setLocationCount] = useState(5);
   const [routeResults, setRouteResults] = useState(null);
+  const [baseRouteMetrics, setBaseRouteMetrics] = useState(null); // Store non-optimized route metrics
   const [isLoading, setIsLoading] = useState(true);
   const [optimizing, setOptimizing] = useState(false);
   const [error, setError] = useState(null);
@@ -719,6 +720,48 @@ const RouteOptimizer = () => {
         priority: m.priority,
       }));
 
+      const directionsService = new window.google.maps.DirectionsService();
+
+      // ────── STEP 1: Calculate BASE route (original order) ──────
+      const baseOrigin = allLocations[0];
+      const baseDestination = allLocations[allLocations.length - 1];
+      const baseWaypoints = allLocations.slice(1, -1);
+
+      const baseRequest = {
+        origin: new window.google.maps.LatLng(baseOrigin.lat, baseOrigin.lng),
+        destination: new window.google.maps.LatLng(
+          baseDestination.lat,
+          baseDestination.lng,
+        ),
+        waypoints: baseWaypoints.map((w) => ({
+          location: new window.google.maps.LatLng(w.lat, w.lng),
+          stopover: true,
+        })),
+        optimizeWaypoints: false,
+        travelMode: "DRIVING",
+        drivingOptions: {
+          departureTime: new Date(),
+          trafficModel: "bestguess",
+        },
+      };
+
+      // Calculate base route metrics
+      directionsService.route(baseRequest, (baseResult, baseStatus) => {
+        if (baseStatus === "OK") {
+          let baseTotalDuration = 0,
+            baseTotalDistance = 0;
+          baseResult.routes[0].legs.forEach((leg) => {
+            baseTotalDuration += leg.duration.value;
+            baseTotalDistance += leg.distance.value;
+          });
+          setBaseRouteMetrics({
+            totalDuration: baseTotalDuration,
+            totalDistance: baseTotalDistance,
+          });
+        }
+      });
+
+      // ────── STEP 2: Calculate OPTIMIZED route ──────
       // Always apply priority + nearest-neighbor sort:
       //   Urgent stops first (nearest-neighbor within group),
       //   then High, Normal, Low — each group chained from
@@ -730,7 +773,6 @@ const RouteOptimizer = () => {
       const destination = sorted[sorted.length - 1];
       const waypoints = sorted.slice(1, -1);
 
-      const directionsService = new window.google.maps.DirectionsService();
       const request = {
         origin: new window.google.maps.LatLng(origin.lat, origin.lng),
         destination: new window.google.maps.LatLng(
@@ -2327,40 +2369,191 @@ const RouteOptimizer = () => {
               {/* Results */}
               {routeResults && (
                 <div className="space-y-4">
-                  {/* Summary stats */}
-                  <div className="grid grid-cols-3 gap-3">
-                    {[
-                      {
-                        Icon: Clock,
-                        label: "Est. Duration",
-                        value: formatDuration(routeResults.totalDuration),
-                        color: "text-[#FFC000]",
-                      },
-                      {
-                        Icon: Navigation,
-                        label: "Total Distance",
-                        value: formatDistance(routeResults.totalDistance),
-                        color: "text-blue-400",
-                      },
-                      {
-                        Icon: MapPin,
-                        label: "Total Stops",
-                        value: `${routeResults.optimizedRoute.length}`,
-                        color: "text-green-400",
-                      },
-                    ].map(({ Icon, label, value, color }) => (
-                      <div
-                        key={label}
-                        className="bg-[#1A1A1A] rounded-xl border border-[#333] p-4"
-                      >
-                        <div className="flex items-center gap-2 mb-1">
-                          <Icon className={`w-4 h-4 ${color}`} />
-                          <span className="text-xs text-gray-400">{label}</span>
+                  {/* Summary stats with base vs optimized comparison */}
+                  {baseRouteMetrics &&
+                  (baseRouteMetrics.totalDuration >
+                    routeResults.totalDuration ||
+                    baseRouteMetrics.totalDistance >
+                      routeResults.totalDistance) ? (
+                    /* Show comparison ONLY when optimization actually improved the route */
+                    <div className="space-y-3">
+                      {/* Optimized Route Header */}
+                      <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 bg-green-500/20 rounded-lg flex items-center justify-center">
+                            <Route className="w-4 h-4 text-green-400" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-sm font-bold text-white">
+                              Route Optimized Successfully
+                            </h3>
+                            <p className="text-xs text-green-400">
+                              Efficiency improvements below
+                            </p>
+                          </div>
                         </div>
-                        <p className={`text-xl font-bold ${color}`}>{value}</p>
                       </div>
-                    ))}
-                  </div>
+
+                      {/* Comparison Cards */}
+                      <div className="grid grid-cols-2 gap-3">
+                        {/* Duration Comparison */}
+                        <div className="bg-[#1A1A1A] rounded-xl border border-[#333] p-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Clock className="w-4 h-4 text-[#FFC000]" />
+                            <span className="text-xs text-gray-400">
+                              Est. Duration
+                            </span>
+                          </div>
+                          <div className="space-y-2">
+                            {/* Base Route - Always shown as worse (longer) */}
+                            <div className="flex items-center justify-between pb-2 border-b border-[#333]/50">
+                              <span className="text-xs text-red-400/60">
+                                Before:
+                              </span>
+                              <span className="text-sm font-medium text-red-400/60 line-through">
+                                {formatDuration(baseRouteMetrics.totalDuration)}
+                              </span>
+                            </div>
+                            {/* Optimized Route - Always shown as better (shorter) */}
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs text-green-400 font-medium">
+                                After:
+                              </span>
+                              <span className="text-lg font-bold text-[#FFC000]">
+                                {formatDuration(routeResults.totalDuration)}
+                              </span>
+                            </div>
+                            {/* Difference - Always shows savings */}
+                            {baseRouteMetrics.totalDuration >
+                              routeResults.totalDuration && (
+                              <div className="flex items-center gap-1.5 pt-1.5 border-t border-green-500/20">
+                                <TrendingUp className="w-3.5 h-3.5 text-green-400" />
+                                <span className="text-xs font-bold text-green-400">
+                                  Saved{" "}
+                                  {formatDuration(
+                                    baseRouteMetrics.totalDuration -
+                                      routeResults.totalDuration,
+                                  )}{" "}
+                                  (
+                                  {Math.round(
+                                    ((baseRouteMetrics.totalDuration -
+                                      routeResults.totalDuration) /
+                                      baseRouteMetrics.totalDuration) *
+                                      100,
+                                  )}
+                                  %)
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Distance Comparison */}
+                        <div className="bg-[#1A1A1A] rounded-xl border border-[#333] p-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Navigation className="w-4 h-4 text-blue-400" />
+                            <span className="text-xs text-gray-400">
+                              Total Distance
+                            </span>
+                          </div>
+                          <div className="space-y-2">
+                            {/* Base Route - Always shown as worse (longer) */}
+                            <div className="flex items-center justify-between pb-2 border-b border-[#333]/50">
+                              <span className="text-xs text-red-400/60">
+                                Before:
+                              </span>
+                              <span className="text-sm font-medium text-red-400/60 line-through">
+                                {formatDistance(baseRouteMetrics.totalDistance)}
+                              </span>
+                            </div>
+                            {/* Optimized Route - Always shown as better (shorter) */}
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs text-green-400 font-medium">
+                                After:
+                              </span>
+                              <span className="text-lg font-bold text-blue-400">
+                                {formatDistance(routeResults.totalDistance)}
+                              </span>
+                            </div>
+                            {/* Difference - Always shows savings */}
+                            {baseRouteMetrics.totalDistance >
+                              routeResults.totalDistance && (
+                              <div className="flex items-center gap-1.5 pt-1.5 border-t border-green-500/20">
+                                <TrendingUp className="w-3.5 h-3.5 text-green-400" />
+                                <span className="text-xs font-bold text-green-400">
+                                  Saved{" "}
+                                  {formatDistance(
+                                    baseRouteMetrics.totalDistance -
+                                      routeResults.totalDistance,
+                                  )}{" "}
+                                  (
+                                  {Math.round(
+                                    ((baseRouteMetrics.totalDistance -
+                                      routeResults.totalDistance) /
+                                      baseRouteMetrics.totalDistance) *
+                                      100,
+                                  )}
+                                  %)
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Total Stops Card */}
+                      <div className="bg-[#1A1A1A] rounded-xl border border-[#333] p-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <MapPin className="w-4 h-4 text-green-400" />
+                          <span className="text-xs text-gray-400">
+                            Total Stops
+                          </span>
+                        </div>
+                        <p className="text-xl font-bold text-green-400">
+                          {routeResults.optimizedRoute.length}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Fallback to original layout if no base metrics OR if optimization didn't improve */
+                    <div className="grid grid-cols-3 gap-3">
+                      {[
+                        {
+                          Icon: Clock,
+                          label: "Est. Duration",
+                          value: formatDuration(routeResults.totalDuration),
+                          color: "text-[#FFC000]",
+                        },
+                        {
+                          Icon: Navigation,
+                          label: "Total Distance",
+                          value: formatDistance(routeResults.totalDistance),
+                          color: "text-blue-400",
+                        },
+                        {
+                          Icon: MapPin,
+                          label: "Total Stops",
+                          value: `${routeResults.optimizedRoute.length}`,
+                          color: "text-green-400",
+                        },
+                      ].map(({ Icon, label, value, color }) => (
+                        <div
+                          key={label}
+                          className="bg-[#1A1A1A] rounded-xl border border-[#333] p-4"
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            <Icon className={`w-4 h-4 ${color}`} />
+                            <span className="text-xs text-gray-400">
+                              {label}
+                            </span>
+                          </div>
+                          <p className={`text-xl font-bold ${color}`}>
+                            {value}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {/* Route Re-optimization Banner (NEW) */}
                   {rerouteTrigger > 0 && deliveryMode && (
