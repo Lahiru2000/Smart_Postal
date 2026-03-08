@@ -106,6 +106,37 @@ def run_ai_verification(
                 reference_audio_path=reference_audio_path,
             )
 
+        # Run liveness detection on live video frames
+        liveness_passed = None
+        liveness_score = None
+        liveness_confidence = None
+        try:
+            import cv2
+            from .ai_model.liveness_detector import check_liveness
+            from .ai_model.face_verifier import extract_best_frames
+
+            live_frames = extract_best_frames(live_video_path, n=10)
+            if live_frames:
+                liveness_result = check_liveness(live_frames)
+                liveness_passed = liveness_result["is_live"]
+                liveness_score = liveness_result["liveness_score"]
+                liveness_confidence = liveness_result["confidence"]
+                logger.info(
+                    f"Video liveness check: passed={liveness_passed}, "
+                    f"score={liveness_score:.4f}, confidence={liveness_confidence}"
+                )
+
+                # If liveness failed, override the match result
+                if not liveness_passed:
+                    result["match"] = False
+                    result["verdict"] = "LIVENESS FAILED"
+                    logger.warning(
+                        f"Liveness check FAILED for link {verification_link_id}: "
+                        f"{liveness_result['reason']}"
+                    )
+        except Exception as liveness_err:
+            logger.warning(f"Liveness check error (non-fatal): {liveness_err}")
+
         # Store results
         vlink.ai_match = result["match"]
         vlink.face_score = result["face_score"]
@@ -115,6 +146,9 @@ def run_ai_verification(
         vlink.verdict = result["verdict"]
         vlink.face_available = result["face_available"]
         vlink.voice_available = result["voice_available"]
+        vlink.liveness_passed = liveness_passed
+        vlink.liveness_score = liveness_score
+        vlink.liveness_confidence = liveness_confidence
         vlink.ai_error = None
         vlink.status = "verified"
         db.commit()

@@ -120,6 +120,9 @@ def generate_link(
         face_available=vlink.face_available,
         voice_available=vlink.voice_available,
         ai_error=vlink.ai_error,
+        liveness_passed=vlink.liveness_passed,
+        liveness_score=vlink.liveness_score,
+        liveness_confidence=vlink.liveness_confidence,
     )
 
 
@@ -160,6 +163,9 @@ def get_links_for_shipment(
             face_available=vl.face_available,
             voice_available=vl.voice_available,
             ai_error=vl.ai_error,
+            liveness_passed=vl.liveness_passed,
+            liveness_score=vl.liveness_score,
+            liveness_confidence=vl.liveness_confidence,
         ))
     return results
 
@@ -243,6 +249,9 @@ def get_link_status(
         "face_available": vlink.face_available,
         "voice_available": vlink.voice_available,
         "ai_error": vlink.ai_error,
+        "liveness_passed": vlink.liveness_passed,
+        "liveness_score": vlink.liveness_score,
+        "liveness_confidence": vlink.liveness_confidence,
     }
 
 
@@ -409,6 +418,7 @@ async def submit_verification_video(
 async def submit_verification_scan(
     token: str,
     scan_data: str = Form(...),
+    liveness_data: str = Form(None),
     audio: UploadFile = File(None),
     db: Session = Depends(get_db),
 ):
@@ -417,6 +427,7 @@ async def submit_verification_scan(
     automatically while recording audio. We extract ArcFace embeddings for
     face comparison AND use the recorded audio for voice verification (dual-model
     WavLM + ECAPA-TDNN ensemble).
+    Includes liveness detection (server-side frame analysis + client-side challenges).
     No auth required – the one-time token IS the auth.
     Face + voice verification when audio is provided; face-only when no audio.
     """
@@ -429,6 +440,14 @@ async def submit_verification_scan(
         snapshots = scan_payload.get("snapshots", [])
     except (json_lib.JSONDecodeError, TypeError):
         raise HTTPException(status_code=400, detail="Invalid scan data format")
+
+    # Parse liveness challenge data from client
+    client_liveness = None
+    if liveness_data:
+        try:
+            client_liveness = json_lib.loads(liveness_data)
+        except (json_lib.JSONDecodeError, TypeError):
+            logger.warning("Invalid liveness_data JSON, proceeding without client challenges")
 
     vlink = db.query(VerificationLink).filter(VerificationLink.token == token).first()
     if not vlink:
@@ -497,6 +516,48 @@ async def submit_verification_scan(
 
     if not live_frames:
         raise HTTPException(status_code=400, detail="No valid frames could be decoded from snapshots")
+
+    # 2b. Liveness detection — anti-spoofing check
+    from app.services.face_ai_engine.ai_model.liveness_detector import check_liveness
+
+    liveness_result = check_liveness(live_frames, liveness_data=client_liveness)
+    liveness_passed = liveness_result["is_live"]
+    liveness_score = liveness_result["liveness_score"]
+    liveness_confidence = liveness_result["confidence"]
+
+    logger.info(
+        f"Liveness check: passed={liveness_passed}, score={liveness_score:.4f}, "
+        f"confidence={liveness_confidence}, reason={liveness_result['reason']}"
+    )
+
+    if not liveness_passed:
+        # Store the liveness failure result
+        vlink.status = "verified"
+        vlink.ai_match = False
+        vlink.liveness_passed = False
+        vlink.liveness_score = liveness_score
+        vlink.liveness_confidence = liveness_confidence
+        vlink.ai_error = f"Liveness check failed: {liveness_result['reason']}"
+        vlink.verdict = "LIVENESS FAILED"
+        vlink.confidence = liveness_confidence
+        vlink.face_available = False
+        vlink.voice_available = False
+        vlink.completed_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "success": False,
+            "error": liveness_result["reason"],
+            "token": token,
+            "status": "verified",
+            "face_score": None,
+            "verdict": "LIVENESS FAILED",
+            "confidence": liveness_confidence,
+            "ai_match": False,
+            "liveness_passed": False,
+            "liveness_score": round(liveness_score, 4),
+            "liveness_reason": liveness_result["reason"],
+        }
 
     # 3. Extract face embeddings from live frames
     from app.services.face_ai_engine.ai_model.face_verifier import (
@@ -666,6 +727,9 @@ async def submit_verification_scan(
     vlink.verdict = verdict
     vlink.face_available = True
     vlink.voice_available = voice_available
+    vlink.liveness_passed = liveness_passed
+    vlink.liveness_score = liveness_score
+    vlink.liveness_confidence = liveness_confidence
     vlink.ai_error = None
     vlink.completed_at = datetime.utcnow()
 
@@ -694,6 +758,9 @@ async def submit_verification_scan(
         "combined_score": combined_score,
         "face_available": True,
         "voice_available": voice_available,
+        "liveness_passed": liveness_passed,
+        "liveness_score": round(liveness_score, 4),
+        "liveness_confidence": liveness_confidence,
         "error": None,
     }
 
@@ -727,6 +794,9 @@ def get_verification_result(
         face_available=vlink.face_available,
         voice_available=vlink.voice_available,
         ai_error=vlink.ai_error,
+        liveness_passed=vlink.liveness_passed,
+        liveness_score=vlink.liveness_score,
+        liveness_confidence=vlink.liveness_confidence,
         completed_at=vlink.completed_at,
         delivery_preference=vlink.delivery_preference,
         delivery_message=vlink.delivery_message,

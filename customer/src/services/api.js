@@ -91,12 +91,15 @@ export const submitVerificationVideo = (token, videoFile, audioBlob = null) => {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
 };
-export const submitVerificationScan = (token, snapshots, audioBlob = null) => {
+export const submitVerificationScan = (token, snapshots, audioBlob = null, livenessData = null) => {
   const formData = new FormData();
   formData.append('scan_data', JSON.stringify({ snapshots }));
   if (audioBlob) {
     const audioFile = new File([audioBlob], 'voice_scan.webm', { type: audioBlob.type || 'audio/webm' });
     formData.append('audio', audioFile);
+  }
+  if (livenessData) {
+    formData.append('liveness_data', JSON.stringify(livenessData));
   }
   return api.post(`/verification-link/public/${token}/scan`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
@@ -109,6 +112,18 @@ export const submitDeliveryPreference = (token, preference, message = '') =>
 // Customer – check for pending verification link on a shipment
 export const getCustomerVerificationLink = (shipmentId) =>
   api.get(`/verification-link/customer/shipment/${shipmentId}`);
+
+// Sinhala Voice Assistant APIs
+export const getAssistantTracking = (trackingId) => api.get(`/assistant/tracking/${trackingId}`);
+export const postAssistantTextQuery = (text) => api.post('/assistant/query/text', { text });
+export const postAssistantVoiceQuery = (audioFile) => {
+  const formData = new FormData();
+  formData.append('file', audioFile);
+  return api.post('/assistant/query/voice', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+export const resetAssistantConversation = () => api.post('/assistant/reset-conversation');
 
 // Verification Links for a shipment (authenticated)
 export const getVerificationLinks = (shipmentId) => api.get(`/verification-link/shipment/${shipmentId}`);

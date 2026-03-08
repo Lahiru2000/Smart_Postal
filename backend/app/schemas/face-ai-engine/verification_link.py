@@ -36,6 +36,9 @@ class VerificationLinkResponse(BaseModel):
     face_available: Optional[bool] = None
     voice_available: Optional[bool] = None
     ai_error: Optional[str] = None
+    liveness_passed: Optional[bool] = None
+    liveness_score: Optional[float] = None
+    liveness_confidence: Optional[str] = None
     delivery_preference: Optional[str] = None
     delivery_message: Optional[str] = None
 
@@ -65,6 +68,9 @@ class VerificationResultResponse(BaseModel):
     face_available: Optional[bool] = None
     voice_available: Optional[bool] = None
     ai_error: Optional[str] = None
+    liveness_passed: Optional[bool] = None
+    liveness_score: Optional[float] = None
+    liveness_confidence: Optional[str] = None
     completed_at: Optional[datetime] = None
     delivery_preference: Optional[str] = None  # deliver_to_neighbor | place_in_locker | return_order
     delivery_message: Optional[str] = None

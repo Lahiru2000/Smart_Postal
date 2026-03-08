@@ -9,6 +9,7 @@ import CourierProfile from './pages/CourierProfile';
 import ShipmentDetails from './pages/ShipmentDetails';
 import RouteOptimizer from './pages/RouteOptimizer';
 import VideoCall from './pages/VideoCall';
+import VoiceAssistant from './pages/VoiceAssistant';
 import IncomingCallOverlay from './components/IncomingCallOverlay';
 
 function App() {
@@ -25,6 +26,7 @@ function App() {
         <Route path="/route-optimizer" element={<RouteOptimizer />} />
         <Route path="/video-call/:roomId" element={<VideoCall />} />
         <Route path="/profile" element={<CourierProfile />} />
+        <Route path="/voice-assistant" element={<VoiceAssistant />} />
       </Routes>
     </BrowserRouter>
   );

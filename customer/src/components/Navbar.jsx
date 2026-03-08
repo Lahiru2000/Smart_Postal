@@ -34,6 +34,8 @@ const Navbar = () => {
     { name: 'Home', path: '/' },
     { name: 'Dashboard', path: '/dashboard' },
     { name: 'Voice Auth', path: '/voice-enrollment' },
+    { name: 'Assistant', path: '/voice-assistant' },
+    { name: 'Profile', path: '/profile' },
   ];
 
   const isActive = (path) => location.pathname === path;

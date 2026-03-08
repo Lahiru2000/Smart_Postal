@@ -1,0 +1,7 @@
+{
+  "TRK001": {"status": "In Transit", "location": "Kurunegala", "rider": "Saman", "last_update": "2026-03-04T10:00:00Z", "estimated_delivery": "2026-03-12"},
+  "TRK002": {"status": "Out for Delivery", "location": "Colombo 07", "rider": "Kamal", "last_update": "2026-03-04T07:45:00Z", "estimated_delivery": "2026-03-06"},
+  "TRK003": {"status": "Delivered", "location": "Galle", "rider": "Tharindu", "last_update": "2026-03-01T16:30:00Z", "delivered_on": "2026-03-01"},
+  "TRK004": {"status": "Pending Pickup", "location": "Kandy", "rider": "Nadeesha", "last_update": "2026-03-03T09:15:00Z", "estimated_delivery": "2026-03-15"},
+  "TRK005": {"status": "Held at Hub", "location": "Jaffna", "rider": "Mahesh", "last_update": "2026-03-04T05:20:00Z", "estimated_delivery": "2026-03-18"}
+}
