@@ -13,6 +13,7 @@ import VoiceEnrollment from './pages/VoiceEnrollment';
 import VoiceVerification from './pages/VoiceVerification';
 import VideoCall from './pages/VideoCall';
 import VerificationCapture from './pages/VerificationCapture';
+import VoiceAssistant from './pages/VoiceAssistant';
 import IncomingCallOverlay from './components/IncomingCallOverlay';
 
 function App() {
@@ -33,6 +34,7 @@ function App() {
         <Route path="/verify/:verificationId" element={<VoiceVerification />} />
         <Route path="/verification/:token" element={<VerificationCapture />} />
         <Route path="/video-call/:roomId" element={<VideoCall />} />
+        <Route path="/voice-assistant" element={<VoiceAssistant />} />
       </Routes>
     </BrowserRouter>
   );

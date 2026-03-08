@@ -1,9 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Video, VideoOff, Upload, CheckCircle, XCircle, Clock,
   Camera, StopCircle, RotateCcw, Send, Package, User, AlertTriangle,
-  ScanFace, Loader2, Mic, MicOff, Home, PackageX, CornerDownRight, Lock, Undo2
+  ScanFace, Loader2, Mic, MicOff, Home, PackageX, CornerDownRight, Lock, Undo2,
+  Eye, ArrowLeft, ArrowRight, Shield
 } from 'lucide-react';
 import { getVerificationLinkPublic, submitVerificationVideo, submitVerificationScan, getVerificationResult, submitDeliveryPreference } from '../services/api';
 
@@ -32,11 +33,27 @@ const VerificationCapture = () => {
   const [uploadedUrl, setUploadedUrl] = useState(null);
 
   // Scan state
-  const [scanStatus, setScanStatus] = useState(''); // '' | 'scanning' | 'analyzing'
+  const [scanStatus, setScanStatus] = useState(''); // '' | 'liveness' | 'scanning' | 'analyzing'
   const [scanResult, setScanResult] = useState(null);
   const [scanAudioBlob, setScanAudioBlob] = useState(null);
   const scanMediaRecorderRef = useRef(null);
   const scanAudioChunksRef = useRef([]);
+
+  // Liveness challenge state
+  const [livenessStage, setLivenessStage] = useState(''); // '' | 'loading' | 'ready' | 'blink' | 'turn_left' | 'turn_right' | 'done' | 'failed'
+  const [livenessMessage, setLivenessMessage] = useState('');
+  const [blinkCount, setBlinkCount] = useState(0);
+  const [headMovements, setHeadMovements] = useState([]);
+  const [challengesCompleted, setChallengesCompleted] = useState([]);
+  const [livenessStartTime, setLivenessStartTime] = useState(null);
+  const [faceDetected, setFaceDetected] = useState(false);
+  const [livenessProgress, setLivenessProgress] = useState(0); // 0-100
+  const faceApiLoadedRef = useRef(false);
+  const livenessIntervalRef = useRef(null);
+  const blinkStateRef = useRef({ eyeOpen: true, blinkCount: 0 });
+  const headPoseRef = useRef({ yaw: 0, leftDetected: false, rightDetected: false });
+  const livenessFramesRef = useRef([]);
+  const canvasRef = useRef(null);
 
   // Audio track state
   const [hasAudioTrack, setHasAudioTrack] = useState(false);
@@ -94,6 +111,7 @@ const VerificationCapture = () => {
       stopCamera();
       if (timerRef.current) clearInterval(timerRef.current);
       if (resultPollRef.current) clearInterval(resultPollRef.current);
+      if (livenessIntervalRef.current) clearInterval(livenessIntervalRef.current);
     };
   }, [token]);
 
@@ -368,34 +386,180 @@ const VerificationCapture = () => {
     setScanResult(null);
     setScanAudioBlob(null);
     setRecordedAudioBlob(null);
+    setLivenessStage('');
+    setLivenessMessage('');
+    setBlinkCount(0);
+    setHeadMovements([]);
+    setChallengesCompleted([]);
+    setFaceDetected(false);
+    setLivenessProgress(0);
+    blinkStateRef.current = { eyeOpen: true, blinkCount: 0 };
+    headPoseRef.current = { yaw: 0, leftDetected: false, rightDetected: false };
+    livenessFramesRef.current = [];
+    if (livenessIntervalRef.current) {
+      clearInterval(livenessIntervalRef.current);
+      livenessIntervalRef.current = null;
+    }
     setMode('choose');
   };
 
-  // ── Live Camera Scan ───────────────────────────────────
+  // ── Live Camera Scan with Liveness Detection ─────────
+
+  // Load face-api.js models
+  const loadFaceApi = useCallback(async () => {
+    if (faceApiLoadedRef.current) return true;
+    try {
+      const faceapi = await import('face-api.js');
+      await faceapi.nets.tinyFaceDetector.loadFromUri('/models');
+      await faceapi.nets.faceLandmark68TinyNet.loadFromUri('/models');
+      faceApiLoadedRef.current = true;
+      window._faceapi = faceapi; // Store reference for use in detection loop
+      console.log('[Liveness] face-api.js models loaded');
+      return true;
+    } catch (err) {
+      console.warn('[Liveness] face-api.js load failed, proceeding without client-side detection:', err);
+      return false;
+    }
+  }, []);
+
+  // Calculate Eye Aspect Ratio (EAR) for blink detection
+  const getEAR = useCallback((eye) => {
+    // eye is array of 6 landmarks: [p1,p2,p3,p4,p5,p6]
+    // EAR = (|p2-p6| + |p3-p5|) / (2 * |p1-p4|)
+    const dist = (a, b) => Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    const vertical1 = dist(eye[1], eye[5]);
+    const vertical2 = dist(eye[2], eye[4]);
+    const horizontal = dist(eye[0], eye[3]);
+    return horizontal > 0 ? (vertical1 + vertical2) / (2.0 * horizontal) : 0;
+  }, []);
+
+  // Estimate head yaw from face landmarks (nose tip vs face center)
+  const getHeadYaw = useCallback((landmarks) => {
+    const positions = landmarks.positions;
+    if (positions.length < 68) return 0;
+
+    // Nose tip: point 30, left face: point 0, right face: point 16
+    const noseTip = positions[30];
+    const leftFace = positions[0];
+    const rightFace = positions[16];
+
+    // Normalized position of nose between left and right face edges
+    const faceWidth = rightFace.x - leftFace.x;
+    if (faceWidth <= 0) return 0;
+    const noseRelative = (noseTip.x - leftFace.x) / faceWidth;
+
+    // 0.5 = centered, <0.4 = turned right (nose moves left), >0.6 = turned left
+    return (noseRelative - 0.5) * 2; // -1 to +1 scale
+  }, []);
+
+  // Face detection + liveness analysis loop
+  const runLivenessDetection = useCallback(async (stage) => {
+    const faceapi = window._faceapi;
+    const video = scanVideoRef.current;
+    if (!faceapi || !video || video.videoWidth === 0) return;
+
+    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 });
+
+    const detection = await faceapi.detectSingleFace(video, options).withFaceLandmarks(true);
+
+    if (!detection) {
+      setFaceDetected(false);
+      return;
+    }
+
+    setFaceDetected(true);
+    const landmarks = detection.landmarks;
+    const positions = landmarks.positions;
+
+    // ── Blink detection ──────────────────────────────────
+    if (stage === 'blink' && positions.length >= 48) {
+      // Left eye: points 36-41, Right eye: points 42-47
+      const leftEye = [positions[36], positions[37], positions[38], positions[39], positions[40], positions[41]];
+      const rightEye = [positions[42], positions[43], positions[44], positions[45], positions[46], positions[47]];
+
+      const leftEAR = getEAR(leftEye);
+      const rightEAR = getEAR(rightEye);
+      const avgEAR = (leftEAR + rightEAR) / 2;
+
+      const BLINK_THRESHOLD = 0.22;
+      const isEyeClosed = avgEAR < BLINK_THRESHOLD;
+
+      if (blinkStateRef.current.eyeOpen && isEyeClosed) {
+        // Eye was open, now closed → start of blink
+        blinkStateRef.current.eyeOpen = false;
+      } else if (!blinkStateRef.current.eyeOpen && !isEyeClosed) {
+        // Eye was closed, now open → blink completed
+        blinkStateRef.current.eyeOpen = true;
+        blinkStateRef.current.blinkCount += 1;
+        setBlinkCount(blinkStateRef.current.blinkCount);
+        console.log(`[Liveness] Blink detected! Count: ${blinkStateRef.current.blinkCount}`);
+      }
+    }
+
+    // ── Head turn detection ──────────────────────────────
+    if ((stage === 'turn_left' || stage === 'turn_right') && positions.length >= 68) {
+      const yaw = getHeadYaw(landmarks);
+      headPoseRef.current.yaw = yaw;
+
+      if (stage === 'turn_left' && yaw > 0.25) {
+        if (!headPoseRef.current.leftDetected) {
+          headPoseRef.current.leftDetected = true;
+          setHeadMovements(prev => [...prev, 'left']);
+          console.log('[Liveness] Left head turn detected');
+        }
+      }
+      if (stage === 'turn_right' && yaw < -0.25) {
+        if (!headPoseRef.current.rightDetected) {
+          headPoseRef.current.rightDetected = true;
+          setHeadMovements(prev => [...prev, 'right']);
+          console.log('[Liveness] Right head turn detected');
+        }
+      }
+    }
+
+    // Capture frame for server-side analysis
+    if (livenessFramesRef.current.length < 15) {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      livenessFramesRef.current.push(canvas.toDataURL('image/jpeg', 0.9));
+    }
+  }, [getEAR, getHeadYaw]);
+
+  // Start the liveness challenge flow
   const startScan = async () => {
     try {
-      // Request BOTH video AND audio — voice is recorded during face scan
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
       setMode('scan');
-      setScanStatus('scanning');
+      setScanStatus('liveness');
       setScanResult(null);
       setScanAudioBlob(null);
       setSubmitError('');
+      setLivenessStage('loading');
+      setLivenessMessage('Initializing liveness detection...');
+      setBlinkCount(0);
+      setHeadMovements([]);
+      setChallengesCompleted([]);
+      setLivenessStartTime(Date.now());
+      setFaceDetected(false);
+      setLivenessProgress(0);
+      blinkStateRef.current = { eyeOpen: true, blinkCount: 0 };
+      headPoseRef.current = { yaw: 0, leftDetected: false, rightDetected: false };
+      livenessFramesRef.current = [];
 
-      // Start recording audio for voice verification
+      // Start audio recording
       scanAudioChunksRef.current = [];
       const audioTracks = stream.getAudioTracks();
-      console.log('[Scan] Audio tracks:', audioTracks.length, audioTracks.map(t => `${t.label} enabled=${t.enabled}`));
       if (audioTracks.length > 0 && audioTracks[0].enabled) {
         try {
-          // Use cloned tracks so the scan's video element doesn't interfere
           const clonedAudioTracks = audioTracks.map(t => t.clone());
           const audioStream = new MediaStream(clonedAudioTracks);
-          // Try codecs in order: opus (webm), then aac (mp4/Safari), then bare fallback
           const audioCandidates = [
             'audio/webm;codecs=opus',
             'audio/webm',
@@ -404,66 +568,137 @@ const VerificationCapture = () => {
           ];
           let selectedAudioMime = '';
           for (const mime of audioCandidates) {
-            if (MediaRecorder.isTypeSupported(mime)) {
-              selectedAudioMime = mime;
-              break;
-            }
+            if (MediaRecorder.isTypeSupported(mime)) { selectedAudioMime = mime; break; }
           }
-          console.log('[Scan] Selected audio MIME:', selectedAudioMime || '(browser default)');
-
           let audioRecorder;
-          const audioRecOptions = {
-            ...(selectedAudioMime ? { mimeType: selectedAudioMime } : {}),
-            audioBitsPerSecond: 128000,
-          };
           try {
-            audioRecorder = new MediaRecorder(audioStream, audioRecOptions);
+            audioRecorder = selectedAudioMime
+              ? new MediaRecorder(audioStream, { mimeType: selectedAudioMime, audioBitsPerSecond: 128000 })
+              : new MediaRecorder(audioStream);
           } catch {
             audioRecorder = new MediaRecorder(audioStream);
           }
-          console.log('[Scan] Audio MediaRecorder mimeType:', audioRecorder.mimeType);
           audioRecorder.ondataavailable = (e) => {
             if (e.data.size > 0) scanAudioChunksRef.current.push(e.data);
           };
           scanMediaRecorderRef.current = audioRecorder;
-          audioRecorder.start(500); // collect audio data every 500ms
+          audioRecorder.start(500);
         } catch (audioErr) {
-          console.warn('Audio recording during scan failed, proceeding with face-only:', audioErr);
+          console.warn('Audio recording during scan failed:', audioErr);
         }
-      } else {
-        console.warn('No audio track available during scan — voice verification will be skipped.');
       }
 
-      // Wait for the video element to mount and attach stream
+      // Attach video
       setTimeout(() => {
         if (scanVideoRef.current) {
           scanVideoRef.current.srcObject = stream;
         }
       }, 100);
 
-      // Capture 8 frames over ~3 seconds, then send for AI analysis
-      const snapshots = [];
-      const captureFrame = () => {
-        const video = scanVideoRef.current;
-        if (!video || video.videoWidth === 0) return null;
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        return canvas.toDataURL('image/jpeg', 0.9);
-      };
+      // Load face-api.js models
+      const faceApiLoaded = await loadFaceApi();
 
-      // Wait a bit for camera to stabilize
+      // Wait for camera to stabilize
       await new Promise(resolve => setTimeout(resolve, 1500));
 
-      for (let i = 0; i < 8; i++) {
-        await new Promise(resolve => setTimeout(resolve, 400));
-        const frame = captureFrame();
-        if (frame) snapshots.push(frame);
+      if (faceApiLoaded) {
+        // ── STAGE 1: Blink Detection ──────────────────────
+        setLivenessStage('blink');
+        setLivenessMessage('Please blink your eyes naturally (2-3 times)');
+        setLivenessProgress(10);
+
+        // Run detection loop for blink stage
+        await new Promise((resolve) => {
+          let elapsed = 0;
+          const interval = setInterval(async () => {
+            elapsed += 200;
+            await runLivenessDetection('blink');
+
+            if (blinkStateRef.current.blinkCount >= 2) {
+              clearInterval(interval);
+              setChallengesCompleted(prev => [...prev, 'blink']);
+              resolve();
+            }
+            if (elapsed > 10000) { // 10s timeout
+              clearInterval(interval);
+              resolve();
+            }
+          }, 200);
+          livenessIntervalRef.current = interval;
+        });
+
+        setLivenessProgress(40);
+
+        // ── STAGE 2: Turn Head Left ──────────────────────
+        setLivenessStage('turn_left');
+        setLivenessMessage('Please slowly turn your head to the LEFT');
+
+        await new Promise((resolve) => {
+          let elapsed = 0;
+          const interval = setInterval(async () => {
+            elapsed += 200;
+            await runLivenessDetection('turn_left');
+
+            if (headPoseRef.current.leftDetected) {
+              clearInterval(interval);
+              setChallengesCompleted(prev => [...prev, 'turn_left']);
+              resolve();
+            }
+            if (elapsed > 8000) {
+              clearInterval(interval);
+              resolve();
+            }
+          }, 200);
+          livenessIntervalRef.current = interval;
+        });
+
+        setLivenessProgress(70);
+
+        // ── STAGE 3: Turn Head Right ─────────────────────
+        setLivenessStage('turn_right');
+        setLivenessMessage('Now turn your head to the RIGHT');
+
+        await new Promise((resolve) => {
+          let elapsed = 0;
+          const interval = setInterval(async () => {
+            elapsed += 200;
+            await runLivenessDetection('turn_right');
+
+            if (headPoseRef.current.rightDetected) {
+              clearInterval(interval);
+              setChallengesCompleted(prev => [...prev, 'turn_right']);
+              resolve();
+            }
+            if (elapsed > 8000) {
+              clearInterval(interval);
+              resolve();
+            }
+          }, 200);
+          livenessIntervalRef.current = interval;
+        });
+
+        setLivenessProgress(90);
+        setLivenessStage('done');
+        setLivenessMessage('Liveness check complete! Analyzing...');
+      } else {
+        // face-api not loaded — capture frames without client-side challenges
+        setLivenessMessage('Capturing for server-side verification...');
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        // Capture frames for server-side analysis
+        const video = scanVideoRef.current;
+        if (video && video.videoWidth > 0) {
+          for (let i = 0; i < 8; i++) {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            livenessFramesRef.current.push(canvas.toDataURL('image/jpeg', 0.9));
+            await new Promise(r => setTimeout(r, 400));
+          }
+        }
       }
 
-      // Wait extra time for voice recording (need at least 3-5 seconds of speech)
+      // Wait extra time for voice recording
       await new Promise(resolve => setTimeout(resolve, 2000));
 
       // Stop audio recording
@@ -483,18 +718,39 @@ const VerificationCapture = () => {
         });
       }
 
+      const snapshots = livenessFramesRef.current;
       if (snapshots.length === 0) {
         setSubmitError('Could not capture frames from camera. Please try again.');
         stopCamera();
         setMode('choose');
         setScanStatus('');
+        setLivenessStage('');
         return;
       }
 
-      // Send to AI (face frames + audio)
+      // Build liveness data for server
+      const livenessPayload = {
+        blink_count: blinkStateRef.current.blinkCount,
+        head_movements: [
+          ...(headPoseRef.current.leftDetected ? ['left'] : []),
+          ...(headPoseRef.current.rightDetected ? ['right'] : []),
+        ],
+        challenges_completed: [
+          ...(blinkStateRef.current.blinkCount >= 2 ? ['blink'] : []),
+          ...(headPoseRef.current.leftDetected ? ['turn_left'] : []),
+          ...(headPoseRef.current.rightDetected ? ['turn_right'] : []),
+        ],
+        challenge_timestamps: [],
+        duration_ms: Date.now() - (livenessStartTime || Date.now()),
+      };
+
+      setLivenessProgress(100);
+
+      // Send to AI (face frames + audio + liveness data)
       setScanStatus('analyzing');
+      setLivenessStage('');
       try {
-        const res = await submitVerificationScan(token, snapshots, audioBlob);
+        const res = await submitVerificationScan(token, snapshots, audioBlob, livenessPayload);
         setScanResult(res.data);
         setScanStatus('');
         stopCamera();
@@ -1014,52 +1270,157 @@ const VerificationCapture = () => {
           </div>
         )}
 
-        {/* ── Scan Mode ───────────────────────────────────── */}
+        {/* ── Scan Mode (with Liveness Challenges) ─────── */}
         {mode === 'scan' && (
           <div className="space-y-4">
-            {/* Camera + scanning overlay */}
+            {/* Camera + liveness overlay */}
             {!scanResult && (
               <>
                 <div className="relative rounded-2xl overflow-hidden border border-[#333333] bg-black aspect-video">
                   <video ref={scanVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                  <canvas ref={canvasRef} className="hidden" />
 
-                  {/* Scanning overlay animation */}
+                  {/* Liveness challenge overlay */}
                   <div className="absolute inset-0 pointer-events-none">
-                    {/* Corner brackets */}
-                    <div className="absolute top-6 left-6 w-12 h-12 border-t-2 border-l-2 border-green-400 rounded-tl-lg" />
-                    <div className="absolute top-6 right-6 w-12 h-12 border-t-2 border-r-2 border-green-400 rounded-tr-lg" />
-                    <div className="absolute bottom-6 left-6 w-12 h-12 border-b-2 border-l-2 border-green-400 rounded-bl-lg" />
-                    <div className="absolute bottom-6 right-6 w-12 h-12 border-b-2 border-r-2 border-green-400 rounded-br-lg" />
+                    {/* Corner brackets — color changes based on liveness stage */}
+                    {(() => {
+                      const bracketColor = !faceDetected ? 'border-red-400' :
+                        livenessStage === 'done' ? 'border-green-400' :
+                        livenessStage === 'blink' || livenessStage === 'turn_left' || livenessStage === 'turn_right' ? 'border-[#FFC000]' :
+                        'border-green-400';
+                      return (
+                        <>
+                          <div className={`absolute top-6 left-6 w-14 h-14 border-t-2 border-l-2 ${bracketColor} rounded-tl-lg transition-colors duration-300`} />
+                          <div className={`absolute top-6 right-6 w-14 h-14 border-t-2 border-r-2 ${bracketColor} rounded-tr-lg transition-colors duration-300`} />
+                          <div className={`absolute bottom-6 left-6 w-14 h-14 border-b-2 border-l-2 ${bracketColor} rounded-bl-lg transition-colors duration-300`} />
+                          <div className={`absolute bottom-6 right-6 w-14 h-14 border-b-2 border-r-2 ${bracketColor} rounded-br-lg transition-colors duration-300`} />
+                        </>
+                      );
+                    })()}
 
                     {/* Scanning line animation */}
-                    {scanStatus === 'scanning' && (
-                      <div className="absolute left-8 right-8 h-0.5 bg-gradient-to-r from-transparent via-green-400 to-transparent animate-[scan_2s_ease-in-out_infinite]" 
+                    {(scanStatus === 'liveness' || scanStatus === 'scanning') && (
+                      <div className="absolute left-8 right-8 h-0.5 bg-gradient-to-r from-transparent via-[#FFC000] to-transparent"
                            style={{ animation: 'scan 2s ease-in-out infinite' }} />
                     )}
                   </div>
 
+                  {/* Face detection indicator */}
+                  {scanStatus === 'liveness' && (
+                    <div className={`absolute top-4 left-4 flex items-center gap-1.5 px-3 py-1.5 rounded-full ${
+                      faceDetected ? 'bg-green-500/20 border border-green-500/30' : 'bg-red-500/20 border border-red-500/30'
+                    }`}>
+                      <div className={`w-2 h-2 rounded-full ${faceDetected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`} />
+                      <span className={`text-xs font-medium ${faceDetected ? 'text-green-400' : 'text-red-400'}`}>
+                        {faceDetected ? 'Face detected' : 'No face detected'}
+                      </span>
+                    </div>
+                  )}
+
                   {/* Audio recording indicator */}
-                  {scanStatus === 'scanning' && (
+                  {(scanStatus === 'liveness' || scanStatus === 'scanning') && (
                     <div className="absolute top-4 right-4 flex items-center gap-1.5 bg-black/70 px-3 py-1.5 rounded-full">
                       <Mic className="w-4 h-4 text-green-400 animate-pulse" />
                       <span className="text-green-400 text-xs font-medium">Recording voice</span>
                     </div>
                   )}
 
-                  {/* Status badge */}
-                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
-                    <div className={`px-4 py-2 rounded-full flex items-center gap-2 text-sm font-medium ${
-                      scanStatus === 'scanning'
-                        ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-                        : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                    }`}>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      {scanStatus === 'scanning' ? 'Scanning face & recording voice...' : 'Analyzing with AI...'}
+                  {/* Liveness challenge prompt */}
+                  {scanStatus === 'liveness' && livenessStage && livenessStage !== 'loading' && (
+                    <div className="absolute bottom-4 left-4 right-4">
+                      <div className="bg-black/80 backdrop-blur-sm rounded-xl border border-[#333333] p-3 space-y-2">
+                        {/* Challenge icon + message */}
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+                            livenessStage === 'blink' ? 'bg-blue-500/20 border border-blue-500/30' :
+                            livenessStage === 'turn_left' ? 'bg-[#FFC000]/20 border border-[#FFC000]/30' :
+                            livenessStage === 'turn_right' ? 'bg-purple-500/20 border border-purple-500/30' :
+                            livenessStage === 'done' ? 'bg-green-500/20 border border-green-500/30' :
+                            'bg-gray-500/20 border border-gray-500/30'
+                          }`}>
+                            {livenessStage === 'blink' && <Eye className="w-5 h-5 text-blue-400" />}
+                            {livenessStage === 'turn_left' && <ArrowLeft className="w-5 h-5 text-[#FFC000]" />}
+                            {livenessStage === 'turn_right' && <ArrowRight className="w-5 h-5 text-purple-400" />}
+                            {livenessStage === 'done' && <CheckCircle className="w-5 h-5 text-green-400" />}
+                            {livenessStage === 'ready' && <Shield className="w-5 h-5 text-gray-400" />}
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-white text-sm font-medium">{livenessMessage}</p>
+                            {livenessStage === 'blink' && (
+                              <p className="text-gray-400 text-xs mt-0.5">Blinks detected: {blinkCount}/2</p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Progress bar */}
+                        <div className="w-full bg-[#333333] rounded-full h-1.5">
+                          <div className="h-1.5 rounded-full bg-gradient-to-r from-[#FFC000] to-green-400 transition-all duration-500"
+                               style={{ width: `${livenessProgress}%` }} />
+                        </div>
+
+                        {/* Challenge steps */}
+                        <div className="flex items-center justify-center gap-3 pt-1">
+                          <div className={`flex items-center gap-1 text-xs ${blinkStateRef.current?.blinkCount >= 2 || challengesCompleted.includes('blink') ? 'text-green-400' : livenessStage === 'blink' ? 'text-blue-400' : 'text-gray-600'}`}>
+                            {(blinkStateRef.current?.blinkCount >= 2 || challengesCompleted.includes('blink')) ? <CheckCircle className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                            Blink
+                          </div>
+                          <div className="text-gray-600 text-xs">→</div>
+                          <div className={`flex items-center gap-1 text-xs ${headPoseRef.current?.leftDetected || challengesCompleted.includes('turn_left') ? 'text-green-400' : livenessStage === 'turn_left' ? 'text-[#FFC000]' : 'text-gray-600'}`}>
+                            {(headPoseRef.current?.leftDetected || challengesCompleted.includes('turn_left')) ? <CheckCircle className="w-3 h-3" /> : <ArrowLeft className="w-3 h-3" />}
+                            Left
+                          </div>
+                          <div className="text-gray-600 text-xs">→</div>
+                          <div className={`flex items-center gap-1 text-xs ${headPoseRef.current?.rightDetected || challengesCompleted.includes('turn_right') ? 'text-green-400' : livenessStage === 'turn_right' ? 'text-purple-400' : 'text-gray-600'}`}>
+                            {(headPoseRef.current?.rightDetected || challengesCompleted.includes('turn_right')) ? <CheckCircle className="w-3 h-3" /> : <ArrowRight className="w-3 h-3" />}
+                            Right
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
+
+                  {/* Analyzing status */}
+                  {scanStatus === 'analyzing' && (
+                    <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
+                      <div className="px-4 py-2 rounded-full flex items-center gap-2 text-sm font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Analyzing face, voice & liveness with AI...
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Loading status */}
+                  {livenessStage === 'loading' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                      <div className="bg-black/80 rounded-xl px-6 py-4 flex items-center gap-3">
+                        <Loader2 className="w-5 h-5 text-[#FFC000] animate-spin" />
+                        <span className="text-white text-sm">Loading liveness detection...</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                <button onClick={() => { stopCamera(); handleRetake(); }}
+                {/* Instructions */}
+                {scanStatus === 'liveness' && (
+                  <div className="bg-[#1A1A1A] rounded-xl border border-[#333333] p-3">
+                    <div className="flex items-start gap-2">
+                      <Shield className="w-4 h-4 text-[#FFC000] mt-0.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-white text-sm font-medium">Anti-Spoofing Liveness Check</p>
+                        <p className="text-gray-500 text-xs mt-1">
+                          Follow the on-screen prompts to prove you're a real person. 
+                          Speak your <strong>full name</strong> clearly during the process.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <button onClick={() => { 
+                  if (livenessIntervalRef.current) clearInterval(livenessIntervalRef.current);
+                  stopCamera(); 
+                  handleRetake(); 
+                }}
                   className="w-full px-5 py-3 bg-[#1A1A1A] text-gray-400 border border-[#333333] font-bold rounded-xl hover:bg-[#252525] transition-colors">
                   Cancel
                 </button>
@@ -1089,6 +1450,14 @@ const VerificationCapture = () => {
                         <div className="flex items-center gap-3 text-xs text-gray-500">
                           <span>Face: <span className="text-white font-bold">{scanResult.face_score}%</span></span>
                           {scanResult.voice_available && <span>Voice: <span className="text-white font-bold">{scanResult.voice_score}%</span></span>}
+                          {scanResult.liveness_passed != null && (
+                            <span className="flex items-center gap-1">
+                              <Shield className="w-3 h-3" />
+                              Liveness: <span className={`font-bold ${scanResult.liveness_passed ? 'text-green-400' : 'text-red-400'}`}>
+                                {scanResult.liveness_passed ? 'Passed' : 'Failed'}
+                              </span>
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -1175,6 +1544,14 @@ const VerificationCapture = () => {
                       <div className="flex items-center justify-center gap-3 text-xs text-gray-500 pt-2">
                         <span>Face: <span className="text-white font-bold">{scanResult.face_score}%</span></span>
                         {scanResult.voice_available && <span>Voice: <span className="text-white font-bold">{scanResult.voice_score}%</span></span>}
+                        {scanResult.liveness_passed != null && (
+                          <span className="flex items-center gap-1">
+                            <Shield className="w-3 h-3" />
+                            Liveness: <span className={`font-bold ${scanResult.liveness_passed ? 'text-green-400' : 'text-red-400'}`}>
+                              {scanResult.liveness_passed ? 'Passed' : 'Failed'}
+                            </span>
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="bg-[#1A1A1A] border border-[#333333] rounded-xl p-4 text-left space-y-1.5">
