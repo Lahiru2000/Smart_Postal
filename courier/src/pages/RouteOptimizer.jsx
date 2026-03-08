@@ -1689,7 +1689,7 @@ const RouteOptimizer = () => {
                   Route Optimizer
                 </h1>
                 <p className="text-gray-400 text-sm font-medium">
-                  ML-powered path selection · weather · traffic · urgency
+                  ML-powered
                 </p>
               </div>
             </div>
@@ -1721,11 +1721,7 @@ const RouteOptimizer = () => {
                 <h2 className="text-2xl font-bold text-white mb-2">
                   Plan Your Route
                 </h2>
-                <p className="text-gray-400">
-                  Displays the most optimized path based on live weather
-                  conditions, real-time traffic, and order urgency — with
-                  supervisor review built in.
-                </p>
+            
               </div>
 
               <div className="space-y-6">
