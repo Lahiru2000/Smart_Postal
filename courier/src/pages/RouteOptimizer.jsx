@@ -77,7 +77,7 @@ const PRIORITIES = {
   },
   high: {
     label: "High",
-    color: "text-orange-400",
+    color: "text-blue-400",
     bg: "bg-orange-500/10",
     border: "border-orange-500/30",
     order: 1,
@@ -85,7 +85,7 @@ const PRIORITIES = {
   },
   normal: {
     label: "Normal",
-    color: "text-blue-400",
+    color: "text-yellow-400",
     bg: "bg-blue-500/10",
     border: "border-blue-500/30",
     order: 2,
@@ -93,7 +93,7 @@ const PRIORITIES = {
   },
   low: {
     label: "Low",
-    color: "text-gray-400",
+    color: "text-purple-400",
     bg: "bg-gray-500/10",
     border: "border-gray-500/30",
     order: 3,
@@ -302,7 +302,7 @@ const formatDuration = (sec) => {
 const formatDistance = (m) =>
   m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m} m`;
 const getPriorityMarkerColor = (p) =>
-  ({ urgent: "#EF4444", high: "#F97316", normal: "#FFC000", low: "#6B7280" })[
+  ({ urgent: "#EF4444", high: "#0f86e7", normal: "#FFC000", low: "#e10afd" })[
     p
   ] || "#FFC000";
 
@@ -1688,9 +1688,7 @@ const RouteOptimizer = () => {
                 <h1 className="text-3xl font-bold text-white tracking-tight">
                   Route Optimizer
                 </h1>
-                <p className="text-gray-400 text-sm font-medium">
-                  ML-powered path selection · weather · traffic · urgency
-                </p>
+                <p className="text-gray-400 text-sm font-medium">ML-powered</p>
               </div>
             </div>
           </div>
@@ -1721,11 +1719,6 @@ const RouteOptimizer = () => {
                 <h2 className="text-2xl font-bold text-white mb-2">
                   Plan Your Route
                 </h2>
-                <p className="text-gray-400">
-                  Displays the most optimized path based on live weather
-                  conditions, real-time traffic, and order urgency — with
-                  supervisor review built in.
-                </p>
               </div>
 
               <div className="space-y-6">
