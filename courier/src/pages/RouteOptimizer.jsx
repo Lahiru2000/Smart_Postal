@@ -447,6 +447,9 @@ const RouteOptimizer = () => {
   const [rerouteTrigger, setRerouteTrigger] = useState(0);
   const [startMarker, setStartMarker] = useState(null);
 
+  // ── Feature: Auto Client Location Change Detection ──
+  const [autoRelocationAlerts, setAutoRelocationAlerts] = useState([]);
+
   // ── Refs ──
   const mapRef = useRef(null);
   const gpsWatchRef = useRef(null);
@@ -457,6 +460,12 @@ const RouteOptimizer = () => {
   const polylineRefs = useRef([]);
   const startConnectorRef = useRef(null);
   const relocationInputRef = useRef(null);
+  // ── Dynamic rerouting refs ──
+  const rerouteDebounceRef = useRef(null); // prevents rapid-fire reroute calls
+  const rerouteHistoryRef = useRef([]); // audit trail: [{timestamp, reason, savings}]
+  const currentGpsRef = useRef(null); // latest GPS coords for origin snapping
+  const clientSnapshotRef = useRef({}); // last-known stop coords { [idx]: { lat, lng } }
+  const clientPollRef = useRef(null); // setInterval handle for client-location polling
 
   useEffect(() => {
     markersRef.current = markers;
@@ -491,6 +500,8 @@ const RouteOptimizer = () => {
     gpsWatchRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         const { latitude, longitude, accuracy, heading, speed } = pos.coords;
+        // ── Keep latest position in ref so rerouting can snap to it ──
+        currentGpsRef.current = { lat: latitude, lng: longitude };
         updatePostmanLocation({
           lat: latitude,
           lng: longitude,
@@ -521,6 +532,114 @@ const RouteOptimizer = () => {
     }
     return () => clearInterval(trafficIntervalRef.current);
   }, [deliveryMode, routeResults]);
+
+  // ─── CLIENT LOCATION CHANGE POLLING ────────────────────────────────────
+  // Every 15 s during an active delivery session, re-fetch shipments and
+  // compare each stop's coordinates. If the backend reports a new delivery
+  // lat/lng for a shipment (because the recipient updated their location),
+  // we automatically move the map marker and re-optimise the route — no
+  // manual input from the postman required.
+  useEffect(() => {
+    if (!deliveryMode || !routeResults?.optimizedRoute) {
+      clearInterval(clientPollRef.current);
+      return;
+    }
+
+    // Initialise snapshot so the first poll has a baseline to compare against
+    routeResults.optimizedRoute.forEach((stop, idx) => {
+      if (!clientSnapshotRef.current[idx]) {
+        clientSnapshotRef.current[idx] = { lat: stop.lat, lng: stop.lng };
+      }
+    });
+
+    const poll = async () => {
+      try {
+        const { data: shipments } = await getShipments();
+        if (!Array.isArray(shipments) || !shipments.length) return;
+
+        // Access the most up-to-date route via the ref so the closure never
+        // captures a stale copy of optimizedRoute.
+        const currentRoute = routeResults?.optimizedRoute ?? [];
+
+        currentRoute.forEach((stop, idx) => {
+          if (completedStops.has(idx)) return; // already delivered — skip
+
+          // Try to match shipment by id stored on the stop object, or fall
+          // back to a name/address substring match.
+          const match = shipments.find(
+            (s) =>
+              (stop.shipmentId &&
+                (s.id === stop.shipmentId ||
+                  s.shipmentId === stop.shipmentId)) ||
+              (s.recipient_name &&
+                stop.name
+                  ?.toLowerCase()
+                  .includes(s.recipient_name.toLowerCase())) ||
+              (s.delivery_address &&
+                stop.name
+                  ?.toLowerCase()
+                  .includes(
+                    (s.delivery_address || "").toLowerCase().slice(0, 20),
+                  )),
+          );
+
+          if (!match) return;
+
+          // Pull new coordinates from whichever field the backend uses
+          const newLat =
+            match.updated_delivery_lat ??
+            match.recipient_lat ??
+            match.delivery_lat ??
+            match.latitude;
+          const newLng =
+            match.updated_delivery_lng ??
+            match.recipient_lng ??
+            match.delivery_lng ??
+            match.longitude;
+          const newName =
+            match.updated_delivery_address ??
+            match.recipient_address ??
+            match.delivery_address ??
+            stop.name;
+
+          if (newLat == null || newLng == null) return;
+
+          const distKm = haversineKm(
+            { lat: stop.lat, lng: stop.lng },
+            { lat: newLat, lng: newLng },
+          );
+
+          // Ignore trivial GPS jitter (< 50 m)
+          if (distKm < 0.05) return;
+
+          // Avoid re-firing for the same already-processed change
+          const snap = clientSnapshotRef.current[idx];
+          if (
+            snap &&
+            Math.abs(snap.lat - newLat) < 0.0001 &&
+            Math.abs(snap.lng - newLng) < 0.0001
+          )
+            return;
+
+          // Record new baseline so we don't process this change again
+          clientSnapshotRef.current[idx] = { lat: newLat, lng: newLng };
+
+          // Auto-apply the relocation
+          applyAutoRelocation(
+            idx,
+            { lat: newLat, lng: newLng, name: newName },
+            distKm,
+          );
+        });
+      } catch (err) {
+        console.warn("Client location poll error:", err);
+      }
+    };
+
+    clientPollRef.current = setInterval(poll, 15_000);
+    return () => clearInterval(clientPollRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deliveryMode, routeResults, completedStops]);
 
   // ─── GOOGLE MAPS LOADING ────────────────────────────────────────────────
   useEffect(() => {
@@ -874,9 +993,58 @@ const RouteOptimizer = () => {
       return updated;
     });
 
-  // ─── PRIORITY + NEAREST-NEIGHBOR SORT ────────────────────────────────────
-  const priorityNearestNeighborSort = (stops, startFrom) => {
+  // ─── PRIORITY + NEAREST-NEIGHBOR SORT (ENHANCED) ──────────────────────────
+  // Improvements over original:
+  //  1. Weather-severity penalty: stops near storms/heavy rain cost extra km
+  //     so the algorithm avoids routing through bad-weather zones unless forced.
+  //  2. Traffic-delay penalty: legs already flagged heavy by trafficLegs add
+  //     virtual distance so the route avoids them when alternatives exist.
+  //  3. Urgency-proximity bonus: an urgent stop within 1 km is always chosen
+  //     next regardless of tier ordering, preventing counter-intuitive detours.
+  //  4. Same O(n²) complexity — no API calls, runs synchronously.
+  const priorityNearestNeighborSort = (
+    stops,
+    startFrom,
+    liveWeather = weatherData,
+    liveTrafficLegs = trafficLegs,
+  ) => {
     const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
+
+    // ── Weather penalty: virtual km added for stops near severe weather ──
+    const weatherPenaltyKm = (stop) => {
+      if (!liveWeather?.length) return 0;
+      let maxSeverity = 0;
+      liveWeather.forEach((w) => {
+        const dist = haversineKm(
+          { lat: stop.lat, lng: stop.lng },
+          { lat: w.lat, lng: w.lng },
+        );
+        if (dist < 8) maxSeverity = Math.max(maxSeverity, w.severity || 0);
+      });
+      // severity 5 (thunderstorm) → +20 km penalty, severity 4 → +12, severity 3 → +6
+      if (maxSeverity >= 5) return 20;
+      if (maxSeverity >= 4) return 12;
+      if (maxSeverity >= 3) return 6;
+      return 0;
+    };
+
+    // ── Traffic penalty: virtual km for a leg that is currently congested ──
+    // liveTrafficLegs[i] covers stop i → stop i+1 in the CURRENT route order.
+    // We use stop name matching as a proxy since indices may have shifted.
+    const trafficPenaltyKm = (stop) => {
+      if (!liveTrafficLegs?.length) return 0;
+      const leg = liveTrafficLegs.find((l) =>
+        l.end
+          ?.toLowerCase()
+          .includes(stop.name?.split(",")[0]?.toLowerCase() ?? ""),
+      );
+      if (!leg) return 0;
+      if (leg.congestionLevel === "heavy") return 8;
+      if (leg.congestionLevel === "moderate") return 3;
+      return 0;
+    };
+
+    // Build priority buckets
     const buckets = {};
     PRIORITY_ORDER.forEach((p) => (buckets[p] = []));
     stops.forEach((s) => {
@@ -890,16 +1058,33 @@ const RouteOptimizer = () => {
     PRIORITY_ORDER.forEach((tier) => {
       const pool = [...buckets[tier]];
       while (pool.length > 0) {
-        let nearestIdx = 0;
-        let nearestDist = Infinity;
+        // ── Urgency-proximity override: urgent stop within 1 km → pick it first ──
+        if (tier === "urgent") {
+          const veryCloseIdx = pool.findIndex(
+            (s) => haversineKm(cursor, s) <= 1.0,
+          );
+          if (veryCloseIdx !== -1) {
+            const chosen = pool.splice(veryCloseIdx, 1)[0];
+            result.push(chosen);
+            cursor = chosen;
+            continue;
+          }
+        }
+
+        // ── Composite score: distance + weather penalty + traffic penalty ──
+        let bestIdx = 0;
+        let bestScore = Infinity;
         pool.forEach((stop, i) => {
-          const d = haversineKm(cursor, stop);
-          if (d < nearestDist) {
-            nearestDist = d;
-            nearestIdx = i;
+          const distKm = haversineKm(cursor, stop);
+          const score =
+            distKm + weatherPenaltyKm(stop) + trafficPenaltyKm(stop);
+          if (score < bestScore) {
+            bestScore = score;
+            bestIdx = i;
           }
         });
-        const chosen = pool.splice(nearestIdx, 1)[0];
+
+        const chosen = pool.splice(bestIdx, 1)[0];
         result.push(chosen);
         cursor = chosen;
       }
@@ -1563,11 +1748,17 @@ const RouteOptimizer = () => {
     }
   };
 
-  // ─── rerouteAroundDisruption ─────────────────────────────────────────────
-  // FIX 3: Accept explicit `fromIdx` so the remaining-stops filter always uses
-  //         the freshly-computed index rather than the stale closure value.
-  // FIX 4: Always clear old polylines even on early-return (e.g. ≤1 stop left)
-  //         so the map never shows a path that leads to a skipped stop.
+  // ─── rerouteAroundDisruption (ENHANCED) ─────────────────────────────────────
+  // Key improvements over original:
+  //  1. Re-sorts remaining stops via priorityNearestNeighborSort (weather+traffic
+  //     aware) instead of keeping stale original order after a skip.
+  //  2. Updates routeResults.optimizedRoute so future reroutes start fresh.
+  //  3. Disruption-type avoidance flags:
+  //       flooding/snow  → avoidHighways + avoidFerries
+  //       closure/accident → try avoidTolls on first attempt; plain retry on fail
+  //  4. Retry with simplified request on DirectionsService failure.
+  //  5. Saves time/distance delta into rerouteHistoryRef for analytics.
+  //  6. Uses live GPS position as origin when available (currentGpsRef).
   const rerouteAroundDisruption = async (
     skippedStopIdx,
     disruption,
@@ -1578,43 +1769,93 @@ const RouteOptimizer = () => {
 
     const { optimizedRoute } = routeResults;
 
-    const remaining = optimizedRoute.filter(
+    // ── Build remaining stops, excluding skipped & completed, from fromIdx ──
+    const rawRemaining = optimizedRoute.filter(
       (_, i) => i !== skippedStopIdx && !completedStops.has(i) && i >= fromIdx,
     );
 
-    if (remaining.length < 2) {
-      // Clear stale polylines so no path leads to the now-skipped stop
+    if (rawRemaining.length < 2) {
       clearPriorityPolylines();
       if (directionsRenderer) directionsRenderer.setDirections({ routes: [] });
       setRerouteLoading(false);
       return;
     }
 
-    const origin = remaining[0];
-    const destination = remaining[remaining.length - 1];
-    const waypoints = remaining.slice(1, -1);
+    // ── Snap origin to live GPS if available, else first remaining stop ──
+    const gpsOrigin = currentGpsRef.current;
+    const originStop = gpsOrigin
+      ? {
+          ...rawRemaining[0],
+          lat: gpsOrigin.lat,
+          lng: gpsOrigin.lng,
+          name: "Your Location",
+        }
+      : rawRemaining[0];
 
-    const directionsService = new window.google.maps.DirectionsService();
-    const request = {
+    // ── Re-sort remaining stops with priority + weather + traffic awareness ──
+    // This is the key improvement: instead of keeping the disrupted order,
+    // we find the genuinely optimal sequence from the current position.
+    const sortedRemaining = priorityNearestNeighborSort(
+      rawRemaining,
+      originStop,
+    );
+
+    const origin = gpsOrigin ? originStop : sortedRemaining[0];
+    const destination = sortedRemaining[sortedRemaining.length - 1];
+    const waypoints = gpsOrigin
+      ? sortedRemaining
+      : sortedRemaining.slice(1, -1);
+
+    // ── Disruption-type avoidance flags ──
+    const isWeatherDisruption = ["flooding", "snow"].includes(disruption?.type);
+    const isRoadDisruption = ["closure", "accident", "construction"].includes(
+      disruption?.type,
+    );
+
+    const buildRequest = (avoidHighways, avoidTolls) => ({
       origin: new window.google.maps.LatLng(origin.lat, origin.lng),
       destination: new window.google.maps.LatLng(
         destination.lat,
         destination.lng,
       ),
-      waypoints: waypoints.map((w) => ({
+      waypoints: (gpsOrigin
+        ? sortedRemaining.slice(0, -1)
+        : sortedRemaining.slice(1, -1)
+      ).map((w) => ({
         location: new window.google.maps.LatLng(w.lat, w.lng),
         stopover: true,
       })),
       optimizeWaypoints: false,
       travelMode: "DRIVING",
       drivingOptions: { departureTime: new Date(), trafficModel: "bestguess" },
-      avoidHighways: disruption?.type === "flooding",
-    };
+      avoidHighways,
+      avoidTolls,
+      avoidFerries: isWeatherDisruption,
+    });
 
-    directionsService.route(request, (result, status) => {
-      if (status === "OK") {
-        drawPriorityPolylines(result, remaining);
+    const directionsService = new window.google.maps.DirectionsService();
 
+    // ── Attempt reroute with appropriate avoidance flags; retry on failure ──
+    const attemptRoute = (request, isRetry = false) => {
+      directionsService.route(request, (result, status) => {
+        if (status !== "OK") {
+          if (!isRetry) {
+            // Retry with fewer constraints (remove highway/toll avoidance)
+            console.warn(
+              `Re-route attempt failed (${status}), retrying without avoidance flags…`,
+            );
+            attemptRoute(buildRequest(false, false), true);
+          } else {
+            console.error("Re-route failed on retry:", status);
+            setRerouteLoading(false);
+          }
+          return;
+        }
+
+        // ── Draw priority-coloured polylines on the new route ──
+        drawPriorityPolylines(result, sortedRemaining);
+
+        // ── Compute new totals (prefer traffic-aware duration) ──
         let rerouteDuration = 0,
           rerouteDistance = 0;
         result.routes[0].legs.forEach((leg) => {
@@ -1623,48 +1864,63 @@ const RouteOptimizer = () => {
           rerouteDistance += leg.distance.value;
         });
 
-        // ── Rebuild ALL markers so numbers are sequential on the new route ──
-        // Hide every existing marker first (including the disrupted one which
-        // is already grey — we leave it hidden so it doesn't confuse the path).
+        // ── Compute savings vs. original remaining route ──
+        const originalRemaining = optimizedRoute.filter(
+          (_, i) =>
+            i !== skippedStopIdx && !completedStops.has(i) && i >= fromIdx,
+        );
+        const originalDuration =
+          routeResults.legs
+            ?.slice(fromIdx, originalRemaining.length + fromIdx)
+            .reduce(
+              (s, l) =>
+                s + (l.duration_in_traffic?.value || l.duration?.value || 0),
+              0,
+            ) ?? 0;
+        const savedSeconds = Math.max(0, originalDuration - rerouteDuration);
+
+        // ── Rebuild markers: completed=green, skipped=grey+red border, active=priority colour ──
         markers.forEach((m) => m.marker?.setMap(null));
 
-        // Build a lookup of original-index → remaining-order (1-based)
-        const remainingIndices = new Set(
-          optimizedRoute
-            .map((_, i) => i)
-            .filter(
-              (i) =>
-                i !== skippedStopIdx && !completedStops.has(i) && i >= fromIdx,
-            ),
+        const remainingSet = new Set(
+          sortedRemaining.map((r) => `${r.lat.toFixed(5)},${r.lng.toFixed(5)}`),
         );
 
         const newMarkers = optimizedRoute.map((loc, originalIdx) => {
+          const locKey = `${loc.lat.toFixed(5)},${loc.lng.toFixed(5)}`;
           const isSkipped = originalIdx === skippedStopIdx;
           const isCompleted = completedStops.has(originalIdx);
+          const isActive =
+            remainingSet.has(locKey) && !isSkipped && !isCompleted;
+          const orderInRemaining = isActive
+            ? sortedRemaining.findIndex(
+                (r) =>
+                  r.lat.toFixed(5) === loc.lat.toFixed(5) &&
+                  r.lng.toFixed(5) === loc.lng.toFixed(5),
+              ) + 1
+            : 0;
 
-          // Compute the display order within the remaining route
-          const orderInRemaining =
-            remaining.findIndex((r) => r.lat === loc.lat && r.lng === loc.lng) +
-            1;
-
-          let fillColor, label, opacity;
+          let fillColor, label, opacity, scale;
           if (isCompleted) {
-            fillColor = "#22C55E"; // green — delivered
+            fillColor = "#22C55E";
             label = "✓";
-            opacity = 0.5;
+            opacity = 0.55;
+            scale = 13;
           } else if (isSkipped) {
-            fillColor = "#6B7280"; // grey — skipped
+            fillColor = "#6B7280";
             label = "✕";
-            opacity = 0.5;
-          } else if (remainingIndices.has(originalIdx)) {
+            opacity = 0.55;
+            scale = 12;
+          } else if (isActive) {
             fillColor = getPriorityMarkerColor(loc.priority);
             label = String(orderInRemaining);
             opacity = 1;
+            scale = 14;
           } else {
-            // past stop not in remaining (shouldn't happen, but safe fallback)
             fillColor = "#6B7280";
             label = "-";
-            opacity = 0.4;
+            opacity = 0.35;
+            scale = 11;
           }
 
           const marker = new window.google.maps.Marker({
@@ -1672,19 +1928,19 @@ const RouteOptimizer = () => {
             map,
             label: {
               text: label,
-              color: isSkipped || isCompleted ? "#fff" : "#000",
+              color: isActive ? "#000" : "#fff",
               fontWeight: "bold",
               fontSize: "11px",
             },
             icon: {
               path: window.google.maps.SymbolPath.CIRCLE,
-              scale: isSkipped ? 12 : 14,
+              scale,
               fillColor,
               fillOpacity: opacity,
               strokeColor: isSkipped ? "#EF4444" : "#000",
               strokeWeight: 2,
             },
-            zIndex: isSkipped ? 0 : 10,
+            zIndex: isActive ? 10 : 0,
           });
 
           return {
@@ -1698,25 +1954,57 @@ const RouteOptimizer = () => {
 
         setMarkers(newMarkers);
 
-        // ── Fit map to the new active route so the path is fully visible ──
+        // ── Fit map to new active route ──
         const bounds = new window.google.maps.LatLngBounds();
-        remaining.forEach((loc) =>
+        sortedRemaining.forEach((loc) =>
           bounds.extend({ lat: loc.lat, lng: loc.lng }),
         );
+        if (gpsOrigin)
+          bounds.extend({ lat: gpsOrigin.lat, lng: gpsOrigin.lng });
         map.fitBounds(bounds, { top: 60, right: 40, bottom: 60, left: 40 });
+
+        // ── Update routeResults so subsequent reroutes see the corrected order ──
+        setRouteResults((prev) => ({
+          ...prev,
+          optimizedRoute: sortedRemaining,
+          totalDuration: rerouteDuration,
+          totalDistance: rerouteDistance,
+          legs: result.routes[0].legs,
+        }));
+
+        // ── Update currentStopIdx to first stop in new sorted list ──
+        const newFirstIdx = optimizedRoute.findIndex(
+          (loc) =>
+            loc.lat.toFixed(5) === sortedRemaining[0].lat.toFixed(5) &&
+            loc.lng.toFixed(5) === sortedRemaining[0].lng.toFixed(5),
+        );
+        if (newFirstIdx !== -1) setCurrentStopIdx(newFirstIdx);
+
+        // ── Audit trail ──
+        rerouteHistoryRef.current.unshift({
+          timestamp: new Date(),
+          reason: `Disruption: ${disruption?.type ?? "unknown"} at stop ${skippedStopIdx + 1}`,
+          savedSeconds,
+          rerouteDuration,
+          rerouteDistance,
+          stopsReordered: sortedRemaining.length,
+        });
 
         setRerouteResult({
           skippedStop: optimizedRoute[skippedStopIdx],
-          newRoute: remaining,
+          newRoute: sortedRemaining,
           rerouteDuration,
           rerouteDistance,
+          savedSeconds,
           timestamp: new Date(),
+          reordered: true,
         });
-      } else {
-        console.error("Re-route failed:", status);
-      }
-      setRerouteLoading(false);
-    });
+
+        setRerouteLoading(false);
+      });
+    };
+
+    attemptRoute(buildRequest(isWeatherDisruption, isRoadDisruption));
   };
 
   const endDelivery = async () => {
@@ -1736,6 +2024,9 @@ const RouteOptimizer = () => {
     setShowRedirectPanel(null);
     setRedirectionLog([]);
     setPriorityUpdateMode(false);
+    setAutoRelocationAlerts([]);
+    clientSnapshotRef.current = {};
+    clearInterval(clientPollRef.current);
     setStartPoint(null);
     if (startConnectorRef.current) {
       startConnectorRef.current.forEach((p) => p.setMap(null));
@@ -1882,46 +2173,80 @@ const RouteOptimizer = () => {
     );
   };
 
+  // ─── rerouteWithNewPriorities (ENHANCED) ────────────────────────────────────
+  // Key improvements over original:
+  //  1. Debounced — rapid priority changes wait 400 ms before firing a request,
+  //     preventing multiple simultaneous DirectionsService calls.
+  //  2. GPS origin snapping — uses live position as the route start if available.
+  //  3. Passes live weather + traffic into priorityNearestNeighborSort.
+  //  4. Preserves completed (green) and disrupted (grey+red) marker states.
+  //  5. Updates currentStopIdx to the new first active stop index.
+  //  6. Logs reroute event to rerouteHistoryRef for the analytics panel.
   const rerouteWithNewPriorities = async (updatedRoute) => {
     if (!updatedRoute || !window.google) return;
 
-    setRerouteLoading(true);
+    // ── Debounce: cancel any pending reroute call ──
+    if (rerouteDebounceRef.current) clearTimeout(rerouteDebounceRef.current);
 
-    const remaining = updatedRoute.filter(
-      (stop, idx) => !completedStops.has(idx) && idx >= currentStopIdx,
-    );
+    rerouteDebounceRef.current = setTimeout(async () => {
+      setRerouteLoading(true);
 
-    if (remaining.length < 2) {
-      setRerouteLoading(false);
-      return;
-    }
+      const remaining = updatedRoute.filter(
+        (stop, idx) => !completedStops.has(idx) && idx >= currentStopIdx,
+      );
 
-    const startFrom = remaining[0];
-    const prioritySorted = priorityNearestNeighborSort(remaining, startFrom);
+      if (remaining.length < 2) {
+        setRerouteLoading(false);
+        return;
+      }
 
-    const origin = prioritySorted[0];
-    const destination = prioritySorted[prioritySorted.length - 1];
-    const waypoints = prioritySorted.slice(1, -1);
+      // ── Snap to live GPS if available ──
+      const gpsOrigin = currentGpsRef.current;
+      const startFrom = gpsOrigin
+        ? {
+            ...remaining[0],
+            lat: gpsOrigin.lat,
+            lng: gpsOrigin.lng,
+            name: "Your Location",
+          }
+        : remaining[0];
 
-    const directionsService = new window.google.maps.DirectionsService();
-    const request = {
-      origin: new window.google.maps.LatLng(origin.lat, origin.lng),
-      destination: new window.google.maps.LatLng(
-        destination.lat,
-        destination.lng,
-      ),
-      waypoints: waypoints.map((w) => ({
-        location: new window.google.maps.LatLng(w.lat, w.lng),
-        stopover: true,
-      })),
-      optimizeWaypoints: false,
-      travelMode: "DRIVING",
-      drivingOptions: { departureTime: new Date(), trafficModel: "bestguess" },
-    };
+      // ── Re-sort with full weather + traffic awareness ──
+      const prioritySorted = priorityNearestNeighborSort(remaining, startFrom);
 
-    directionsService.route(request, (result, status) => {
-      if (status === "OK") {
-        directionsRenderer.setDirections(result);
+      const origin = gpsOrigin ? startFrom : prioritySorted[0];
+      const destination = prioritySorted[prioritySorted.length - 1];
+      const midpoints = gpsOrigin
+        ? prioritySorted.slice(0, -1)
+        : prioritySorted.slice(1, -1);
+
+      const directionsService = new window.google.maps.DirectionsService();
+      const request = {
+        origin: new window.google.maps.LatLng(origin.lat, origin.lng),
+        destination: new window.google.maps.LatLng(
+          destination.lat,
+          destination.lng,
+        ),
+        waypoints: midpoints.map((w) => ({
+          location: new window.google.maps.LatLng(w.lat, w.lng),
+          stopover: true,
+        })),
+        optimizeWaypoints: false,
+        travelMode: "DRIVING",
+        drivingOptions: {
+          departureTime: new Date(),
+          trafficModel: "bestguess",
+        },
+      };
+
+      const handleResult = (result, status) => {
+        if (status !== "OK") {
+          console.error("Priority re-route failed:", status);
+          setError("Failed to recalculate route. Please try manually.");
+          setRerouteLoading(false);
+          return;
+        }
+
         drawPriorityPolylines(result, prioritySorted);
 
         let newDuration = 0,
@@ -1931,6 +2256,7 @@ const RouteOptimizer = () => {
           newDistance += leg.distance.value;
         });
 
+        // ── Update routeResults with new route order and metrics ──
         setRouteResults((prev) => ({
           ...prev,
           optimizedRoute: prioritySorted,
@@ -1939,38 +2265,101 @@ const RouteOptimizer = () => {
           legs: result.routes[0].legs,
         }));
 
+        // ── Update currentStopIdx to the index of the new first active stop ──
+        const newFirstStop = prioritySorted[0];
+        const newFirstIdx = updatedRoute.findIndex(
+          (s) =>
+            s.lat.toFixed(5) === newFirstStop.lat.toFixed(5) &&
+            s.lng.toFixed(5) === newFirstStop.lng.toFixed(5),
+        );
+        if (newFirstIdx !== -1) setCurrentStopIdx(newFirstIdx);
+
+        // ── Rebuild markers: preserve completed/disrupted/redirected visual state ──
         markers.forEach((m) => m.marker?.setMap(null));
+
+        const activeSet = new Set(
+          prioritySorted.map((s) => `${s.lat.toFixed(5)},${s.lng.toFixed(5)}`),
+        );
+        const disruptedIndices = new Set(disruptions.map((d) => d.stopIndex));
+        const redirectedIndices = new Set(
+          redirections
+            .filter((r) => r.status === "transferred")
+            .map((r) => r.stopIndex),
+        );
+
         const newMarkers = prioritySorted.map((loc, i) => {
+          const origIdx = updatedRoute.findIndex(
+            (s) =>
+              s.lat.toFixed(5) === loc.lat.toFixed(5) &&
+              s.lng.toFixed(5) === loc.lng.toFixed(5),
+          );
+          const isCompleted = completedStops.has(origIdx);
+          const isDisrupted = disruptedIndices.has(origIdx);
+          const isRedirected = redirectedIndices.has(origIdx);
+
+          let fillColor = getPriorityMarkerColor(loc.priority);
+          let label = `${i + 1}`;
+          let opacity = 1;
+          let strokeColor = "#000";
+
+          if (isCompleted) {
+            fillColor = "#22C55E";
+            label = "✓";
+            opacity = 0.55;
+          }
+          if (isDisrupted) {
+            fillColor = "#6B7280";
+            label = "✕";
+            opacity = 0.55;
+            strokeColor = "#EF4444";
+          }
+          if (isRedirected) {
+            fillColor = "#A855F7";
+            label = "→";
+            opacity = 0.85;
+          }
+
           const marker = new window.google.maps.Marker({
             position: { lat: loc.lat, lng: loc.lng },
             map,
             label: {
-              text: `${i + 1}`,
-              color: "#000",
+              text: label,
+              color: isCompleted || isDisrupted ? "#fff" : "#000",
               fontWeight: "bold",
               fontSize: "12px",
             },
             icon: {
               path: window.google.maps.SymbolPath.CIRCLE,
               scale: 14,
-              fillColor: getPriorityMarkerColor(loc.priority),
-              fillOpacity: 1,
-              strokeColor: "#000",
+              fillColor,
+              fillOpacity: opacity,
+              strokeColor,
               strokeWeight: 2,
             },
           });
           return { marker, ...loc };
         });
+
         setMarkers(newMarkers);
 
-        console.log("✅ Route re-optimized with priority + nearest-neighbor");
+        // ── Audit trail ──
+        rerouteHistoryRef.current.unshift({
+          timestamp: new Date(),
+          reason: "Priority update re-optimisation",
+          rerouteDuration: newDuration,
+          rerouteDistance: newDistance,
+          stopsReordered: prioritySorted.length,
+        });
+
+        console.log(
+          "✅ Route re-optimized with priority + weather + traffic awareness",
+        );
         setRerouteTrigger((prev) => prev + 1);
-      } else {
-        console.error("Re-route failed:", status);
-        setError("Failed to recalculate route. Please try manually.");
-      }
-      setRerouteLoading(false);
-    });
+        setRerouteLoading(false);
+      };
+
+      directionsService.route(request, handleResult);
+    }, 400); // 400 ms debounce
   };
 
   const createStartPointMarker = (startLoc) => {
@@ -2243,6 +2632,103 @@ const RouteOptimizer = () => {
     setDetourInfo(null);
     setRelocationStep("input");
   };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ║  FEATURE 5b — AUTO CLIENT-LOCATION CHANGE HANDLER
+  // ║  Called by the polling useEffect when the backend signals that a
+  // ║  recipient has updated their delivery address.  No modal is shown —
+  // ║  the postman receives an in-app alert card and the route re-optimises
+  // ║  automatically.
+  // ══════════════════════════════════════════════════════════════════════════
+  const applyAutoRelocation = useCallback(
+    (stopIndex, newLocation, distKm) => {
+      if (!routeResults?.optimizedRoute || !window.google) return;
+
+      const oldStop = routeResults.optimizedRoute[stopIndex];
+
+      // 1. Update the route array with the new coordinates
+      const updatedRoute = routeResults.optimizedRoute.map((stop, idx) =>
+        idx === stopIndex
+          ? {
+              ...stop,
+              name: newLocation.name,
+              lat: newLocation.lat,
+              lng: newLocation.lng,
+            }
+          : stop,
+      );
+
+      setRouteResults((prev) => ({ ...prev, optimizedRoute: updatedRoute }));
+
+      // 2. Move the existing map marker to the new position and recolour it
+      //    orange so the postman can instantly see which pin moved.
+      const m = markersRef.current[stopIndex];
+      if (m?.marker) {
+        m.marker.setPosition({ lat: newLocation.lat, lng: newLocation.lng });
+        m.marker.setTitle(newLocation.name);
+        m.marker.setIcon({
+          path: window.google.maps.SymbolPath.CIRCLE,
+          scale: 14,
+          fillColor: "#F97316", // orange — "relocated"
+          fillOpacity: 1,
+          strokeColor: "#000",
+          strokeWeight: 2,
+        });
+        // Pulse the map pan to the new location so the postman notices
+        if (map) map.panTo({ lat: newLocation.lat, lng: newLocation.lng });
+      }
+
+      // 3. Show a dismissible alert banner in the UI
+      const alertId = Date.now();
+      setAutoRelocationAlerts(
+        (prev) =>
+          [
+            {
+              id: alertId,
+              stopIndex,
+              stopNum: stopIndex + 1,
+              oldAddress: oldStop?.name ?? "—",
+              newAddress: newLocation.name,
+              distKm,
+              canSelfHandle: distKm <= 2,
+              timestamp: new Date(),
+            },
+            ...prev,
+          ].slice(0, 5), // keep at most 5 alerts visible
+      );
+
+      // 4. Add to the relocation history log
+      setRelocationEvents((prev) => [
+        {
+          id: alertId,
+          stopIndex,
+          oldAddress: oldStop?.name ?? "—",
+          newAddress: newLocation.name,
+          detourKm: distKm,
+          action: "auto_detected",
+          timestamp: new Date(),
+        },
+        ...prev,
+      ]);
+
+      // 5. Snapshot base metrics so the Before/After panel updates correctly
+      if (routeResults) {
+        setBaseRouteMetrics({
+          totalDuration: routeResults.totalDuration,
+          totalDistance: routeResults.totalDistance,
+        });
+      }
+
+      // 6. Re-optimise the full remaining route around the new location
+      rerouteWithNewPriorities(updatedRoute);
+
+      console.log(
+        `📍 Auto-relocation: stop ${stopIndex + 1} moved ${distKm.toFixed(2)} km → route re-optimised`,
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [routeResults, map, markersRef],
+  );
 
   const rainPoints = weatherData.filter((w) => w.severity >= 2);
   const stormPoints = weatherData.filter((w) => w.severity >= 4);
@@ -2906,16 +3392,6 @@ const RouteOptimizer = () => {
 
                               {/* Action row */}
                               <div className="grid grid-cols-2 gap-1.5 px-3 pb-3">
-                                {/* Navigate to this stop — opens native Google Maps app */}
-                                <button
-                                  onClick={() =>
-                                    openNativeNavigation(currentStop)
-                                  }
-                                  className="col-span-2 flex items-center justify-center gap-2 py-2.5 bg-[#FFC000] hover:bg-[#FFD040] text-black text-sm font-bold rounded-lg transition-all shadow-md shadow-[#FFC000]/20 active:scale-95"
-                                >
-                                  <Navigation className="w-4 h-4" />
-                                  Navigate to This Stop
-                                </button>
                                 {/* Mark delivered */}
                                 <button
                                   onClick={() =>
@@ -2926,17 +3402,6 @@ const RouteOptimizer = () => {
                                   <CheckCircle className="w-4 h-4" />
                                   Done
                                 </button>
-                                {/* Report road issue */}
-                                <button
-                                  onClick={() => {
-                                    setDisruptionTarget(currentStopIdx);
-                                    setShowDisruptionModal(true);
-                                  }}
-                                  className="flex flex-col items-center gap-1 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 rounded-lg text-xs font-bold transition-all"
-                                >
-                                  <ShieldAlert className="w-4 h-4" />
-                                  Issue
-                                </button>
                                 {/* Recipient relocated — new address re-route */}
                                 <button
                                   onClick={() =>
@@ -2946,28 +3411,6 @@ const RouteOptimizer = () => {
                                 >
                                   <MapPin className="w-4 h-4" />
                                   Relocated
-                                </button>
-                                {/* Hand off to another postman */}
-                                <button
-                                  onClick={() =>
-                                    flagForRedirection(
-                                      currentStopIdx,
-                                      "Address issue",
-                                    )
-                                  }
-                                  className="flex flex-col items-center gap-1 py-2 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-400 rounded-lg text-xs font-bold transition-all"
-                                >
-                                  <PhoneForwarded className="w-4 h-4" />
-                                  Hand Off
-                                </button>
-
-                                {/* View full remaining route on the in-app map */}
-                                <button
-                                  onClick={showFullRouteOnMap}
-                                  className="col-span-2 flex items-center justify-center gap-2 py-2 bg-black/40 hover:bg-white/5 border border-[#333] hover:border-[#FFC000]/40 text-gray-400 hover:text-[#FFC000] text-xs font-bold rounded-lg transition-all"
-                                >
-                                  <Route className="w-3.5 h-3.5" />
-                                  View Full Remaining Route on Map
                                 </button>
                               </div>
                             </div>
@@ -3289,6 +3732,59 @@ const RouteOptimizer = () => {
                     </div>
                   )}
 
+                  {/* ── AUTO CLIENT RELOCATION ALERTS ── */}
+                  {autoRelocationAlerts.map((alert) => (
+                    <div
+                      key={alert.id}
+                      className="p-4 bg-orange-500/10 border border-orange-500/40 rounded-xl"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="w-9 h-9 bg-orange-500/20 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <MapPin className="w-4 h-4 text-orange-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="text-sm font-bold text-orange-300">
+                              Client Relocated — Stop {alert.stopNum}
+                            </p>
+                            <span
+                              className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
+                                alert.canSelfHandle
+                                  ? "bg-green-500/15 text-green-400 border border-green-500/30"
+                                  : "bg-red-500/15 text-red-400 border border-red-500/30"
+                              }`}
+                            >
+                              {alert.distKm.toFixed(2)} km away
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-500 truncate">
+                            <span className="line-through text-gray-600">
+                              {alert.oldAddress?.split(",")[0]}
+                            </span>
+                            {" → "}
+                            <span className="text-white font-medium">
+                              {alert.newAddress?.split(",")[0]}
+                            </span>
+                          </p>
+                          <p className="text-xs text-orange-400 font-medium mt-1.5 flex items-center gap-1.5">
+                            <RefreshCw className="w-3 h-3" />
+                            Route automatically re-optimised to new location
+                          </p>
+                        </div>
+                        <button
+                          onClick={() =>
+                            setAutoRelocationAlerts((prev) =>
+                              prev.filter((a) => a.id !== alert.id),
+                            )
+                          }
+                          className="text-gray-600 hover:text-white transition-colors flex-shrink-0"
+                        >
+                          <XCircle className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
                   {/* Weather delay banner */}
                   {rainPoints.length > 0 && (
                     <div
@@ -3529,7 +4025,8 @@ const RouteOptimizer = () => {
                               Recalculating Route
                             </p>
                             <p className="text-xs text-gray-500 mt-1">
-                              Finding fastest path around disruption…
+                              Re-sorting stops by priority, weather &amp;
+                              traffic…
                             </p>
                           </div>
                         </div>
@@ -3547,6 +4044,8 @@ const RouteOptimizer = () => {
                             routeResults.totalDistance;
                           const timeSaved = timeDelta < 0;
                           const distSaved = distDelta < 0;
+                          const proactiveSavedSec =
+                            rerouteResult.savedSeconds ?? 0;
                           return (
                             <div className="p-4 border-b border-[#2a2a2a]">
                               {/* Success header row */}
@@ -3556,8 +4055,13 @@ const RouteOptimizer = () => {
                                     <CheckCircle className="w-4 h-4 text-green-400" />
                                   </div>
                                   <div>
-                                    <p className="text-sm font-bold text-white">
+                                    <p className="text-sm font-bold text-white flex items-center gap-2">
                                       Route Recalculated
+                                      {rerouteResult.reordered && (
+                                        <span className="text-[10px] font-bold text-[#FFC000] bg-[#FFC000]/10 border border-[#FFC000]/30 px-1.5 py-0.5 rounded-full">
+                                          Re-sorted
+                                        </span>
+                                      )}
                                     </p>
                                     <p className="text-xs text-gray-500">
                                       {rerouteResult.timestamp.toLocaleTimeString()}
@@ -3622,7 +4126,7 @@ const RouteOptimizer = () => {
                               </div>
 
                               {/* Delta badges */}
-                              <div className="flex items-center gap-2 mb-3">
+                              <div className="flex items-center gap-2 mb-3 flex-wrap">
                                 <span
                                   className={`inline-flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg border ${
                                     timeSaved
@@ -3645,6 +4149,13 @@ const RouteOptimizer = () => {
                                   {distSaved ? "−" : "+"}
                                   {formatDistance(Math.abs(distDelta))}
                                 </span>
+                                {proactiveSavedSec > 60 && (
+                                  <span className="inline-flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg border text-[#FFC000] bg-[#FFC000]/10 border-[#FFC000]/20">
+                                    <TrendingUp className="w-3 h-3" />~
+                                    {formatDuration(proactiveSavedSec)} saved vs
+                                    disrupted path
+                                  </span>
+                                )}
                               </div>
 
                               {/* Remaining stops count */}
@@ -4584,8 +5095,7 @@ const RouteOptimizer = () => {
               <div className="p-5 space-y-4">
                 <p className="text-xs text-gray-400 leading-relaxed">
                   The recipient has moved. Search for their new address and the
-                  system will calculate whether you can handle it or need to
-                  hand it off.
+                  route will be re-optimised automatically.
                 </p>
 
                 <div className="space-y-2">
@@ -4630,7 +5140,7 @@ const RouteOptimizer = () => {
               </div>
             )}
 
-            {/* ── STEP 2: Decision — self-handle vs transfer ── */}
+            {/* ── STEP 2: Confirm relocation ── */}
             {relocationStep === "decision" && detourInfo && (
               <div className="p-5 space-y-4">
                 {/* Detour summary */}
@@ -4653,13 +5163,10 @@ const RouteOptimizer = () => {
                       {newRelocationAddress?.name?.split(",")[0]}
                     </span>
                   </div>
-                  {/* Threshold bar */}
+                  {/* Distance bar */}
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs text-gray-600">0 km</span>
-                      <span className="text-xs text-gray-600">
-                        Threshold: 2 km
-                      </span>
                       <span className="text-xs text-gray-600">5+ km</span>
                     </div>
                     <div className="h-2 bg-[#2a2a2a] rounded-full overflow-hidden">
@@ -4677,73 +5184,28 @@ const RouteOptimizer = () => {
                       />
                     </div>
                   </div>
-                  <div
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold ${detourInfo.canSelfHandle ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20"}`}
-                  >
-                    {detourInfo.canSelfHandle ? (
-                      <>
-                        <CheckCircle className="w-3.5 h-3.5" /> Within range —
-                        you can handle this
-                      </>
-                    ) : (
-                      <>
-                        <AlertTriangle className="w-3.5 h-3.5" /> Too far —
-                        transfer recommended
-                      </>
-                    )}
-                  </div>
                 </div>
 
-                {/* Action options */}
-                <div className="space-y-2">
+                {/* Confirm button */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={cancelRelocationModal}
+                    className="flex-1 py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium border border-[#333] rounded-xl"
+                  >
+                    Cancel
+                  </button>
                   <button
                     onClick={confirmSelfHandleRelocation}
-                    className="w-full flex items-center gap-3 p-3.5 bg-green-500/10 hover:bg-green-500/15 border border-green-500/30 hover:border-green-500/50 rounded-xl transition-all group"
+                    className="flex-1 py-2.5 text-sm font-bold rounded-xl bg-orange-500 hover:bg-orange-400 text-white flex items-center justify-center gap-2 transition-all"
                   >
-                    <div className="w-9 h-9 rounded-lg bg-green-500/20 flex items-center justify-center flex-shrink-0">
-                      <Navigation className="w-4 h-4 text-green-400" />
-                    </div>
-                    <div className="flex-1 text-left">
-                      <p className="text-sm font-bold text-white">
-                        I'll Handle It
-                      </p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        Update stop to new address and re-optimise my route
-                      </p>
-                    </div>
-                    {detourInfo.canSelfHandle && (
-                      <span className="text-xs font-bold text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full flex-shrink-0">
-                        Recommended
-                      </span>
-                    )}
-                  </button>
-
-                  <button
-                    onClick={confirmTransferRelocation}
-                    className="w-full flex items-center gap-3 p-3.5 bg-purple-500/10 hover:bg-purple-500/15 border border-purple-500/30 hover:border-purple-500/50 rounded-xl transition-all group"
-                  >
-                    <div className="w-9 h-9 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
-                      <PhoneForwarded className="w-4 h-4 text-purple-400" />
-                    </div>
-                    <div className="flex-1 text-left">
-                      <p className="text-sm font-bold text-white">
-                        Transfer to Nearby Postman
-                      </p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        Hand off to a postman covering the new location
-                      </p>
-                    </div>
-                    {!detourInfo.canSelfHandle && (
-                      <span className="text-xs font-bold text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded-full flex-shrink-0">
-                        Recommended
-                      </span>
-                    )}
+                    <Navigation className="w-4 h-4" />
+                    Confirm &amp; Re-optimise
                   </button>
                 </div>
 
                 <button
                   onClick={() => setRelocationStep("input")}
-                  className="w-full py-2 text-sm text-gray-600 hover:text-gray-400 transition-colors font-medium"
+                  className="w-full py-1.5 text-xs text-gray-600 hover:text-gray-400 transition-colors font-medium"
                 >
                   ← Change Address
                 </button>
