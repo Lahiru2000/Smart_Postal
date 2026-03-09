@@ -415,6 +415,7 @@ const RouteOptimizer = () => {
 
   // ── Feature: Dynamic Re-routing ──
   const [deliveryMode, setDeliveryMode] = useState(false);
+  const [showDeliverySuccess, setShowDeliverySuccess] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [currentStopIdx, setCurrentStopIdx] = useState(0);
   const [completedStops, setCompletedStops] = useState(new Set());
@@ -457,6 +458,7 @@ const RouteOptimizer = () => {
   const searchInputRef = useRef(null);
   const startPointRef = useRef(null);
   const markersRef = useRef([]);
+  const completedMarkersRef = useRef([]); // green ✓ pins — never wiped by reroute
   const polylineRefs = useRef([]);
   const startConnectorRef = useRef(null);
   const relocationInputRef = useRef(null);
@@ -1666,18 +1668,58 @@ const RouteOptimizer = () => {
     if (!sessionId) return;
     try {
       const { data } = await completeStop(sessionId, idx);
-      setCompletedStops(new Set(data.completed_stops));
-      setCurrentStopIdx(data.current_stop_idx);
-      const m = markers[idx];
-      if (m?.marker) {
+      const newCompletedStops = new Set(data.completed_stops);
+      const newCurrentStopIdx = data.current_stop_idx;
+
+      setCompletedStops(newCompletedStops);
+      setCurrentStopIdx(newCurrentStopIdx);
+
+      // Turn delivered marker green + checkmark, save to completedMarkersRef
+      const m = markersRef.current[idx];
+      if (m?.marker && window.google) {
         m.marker.setIcon({
           path: window.google.maps.SymbolPath.CIRCLE,
           scale: 14,
           fillColor: "#22C55E",
           fillOpacity: 1,
-          strokeColor: "#000",
+          strokeColor: "#1a1a1a",
           strokeWeight: 2,
         });
+        m.marker.setLabel({
+          text: "✓",
+          color: "#fff",
+          fontWeight: "bold",
+          fontSize: "12px",
+        });
+        m.marker.setZIndex(5);
+        // Park this marker in completedMarkersRef so reroute never removes it
+        completedMarkersRef.current.push(m.marker);
+      }
+
+      // Clear existing route lines from the map
+      clearPriorityPolylines();
+      if (directionsRenderer) directionsRenderer.setDirections({ routes: [] });
+
+      // ── Check if all stops are done ──
+      const totalStops = routeResults?.optimizedRoute?.length ?? 0;
+      if (newCompletedStops.size >= totalStops && totalStops > 0) {
+        // All delivered — end session and show success
+        try {
+          await endDeliverySession(sessionId, "completed");
+        } catch (_) {}
+        setShowDeliverySuccess(true);
+        setDeliveryMode(false);
+        return;
+      }
+
+      // Re-optimise and redraw route for remaining stops only
+      // Pass fresh completed/currentIdx so reroute doesn't read stale closure
+      if (routeResults?.optimizedRoute) {
+        rerouteWithNewPriorities(
+          routeResults.optimizedRoute,
+          newCompletedStops,
+          newCurrentStopIdx,
+        );
       }
     } catch (err) {
       console.error("Failed to complete stop:", err);
@@ -2027,6 +2069,8 @@ const RouteOptimizer = () => {
     setAutoRelocationAlerts([]);
     clientSnapshotRef.current = {};
     clearInterval(clientPollRef.current);
+    completedMarkersRef.current.forEach((m) => m?.setMap(null));
+    completedMarkersRef.current = [];
     setStartPoint(null);
     if (startConnectorRef.current) {
       startConnectorRef.current.forEach((p) => p.setMap(null));
@@ -2182,8 +2226,16 @@ const RouteOptimizer = () => {
   //  4. Preserves completed (green) and disrupted (grey+red) marker states.
   //  5. Updates currentStopIdx to the new first active stop index.
   //  6. Logs reroute event to rerouteHistoryRef for the analytics panel.
-  const rerouteWithNewPriorities = async (updatedRoute) => {
+  const rerouteWithNewPriorities = async (
+    updatedRoute,
+    overrideCompleted,
+    overrideCurrentIdx,
+  ) => {
     if (!updatedRoute || !window.google) return;
+
+    // ── Use passed-in values (avoids stale closure after setState) ──
+    const effectiveCompleted = overrideCompleted ?? completedStops;
+    const effectiveCurrentIdx = overrideCurrentIdx ?? currentStopIdx;
 
     // ── Debounce: cancel any pending reroute call ──
     if (rerouteDebounceRef.current) clearTimeout(rerouteDebounceRef.current);
@@ -2192,8 +2244,22 @@ const RouteOptimizer = () => {
       setRerouteLoading(true);
 
       const remaining = updatedRoute.filter(
-        (stop, idx) => !completedStops.has(idx) && idx >= currentStopIdx,
+        (stop, idx) =>
+          !effectiveCompleted.has(idx) && idx >= effectiveCurrentIdx,
       );
+
+      // ── All stops delivered — show success ──
+      if (
+        remaining.length === 0 ||
+        updatedRoute.every((_, i) => effectiveCompleted.has(i))
+      ) {
+        setRerouteLoading(false);
+        clearPriorityPolylines();
+        if (directionsRenderer)
+          directionsRenderer.setDirections({ routes: [] });
+        setShowDeliverySuccess(true);
+        return;
+      }
 
       if (remaining.length < 2) {
         setRerouteLoading(false);
@@ -2274,12 +2340,16 @@ const RouteOptimizer = () => {
         );
         if (newFirstIdx !== -1) setCurrentStopIdx(newFirstIdx);
 
-        // ── Rebuild markers: preserve completed/disrupted/redirected visual state ──
-        markers.forEach((m) => m.marker?.setMap(null));
+        // ── Rebuild active markers only — completed pins live in completedMarkersRef ──
+        // Remove only active markers; green ✓ pins are owned by completedMarkersRef
+        // and must never be removed here.
+        const completedPinSet = new Set(completedMarkersRef.current);
+        markersRef.current.forEach((m) => {
+          if (m?.marker && !completedPinSet.has(m.marker)) {
+            m.marker.setMap(null);
+          }
+        });
 
-        const activeSet = new Set(
-          prioritySorted.map((s) => `${s.lat.toFixed(5)},${s.lng.toFixed(5)}`),
-        );
         const disruptedIndices = new Set(disruptions.map((d) => d.stopIndex));
         const redirectedIndices = new Set(
           redirections
@@ -2288,32 +2358,22 @@ const RouteOptimizer = () => {
         );
 
         const newMarkers = prioritySorted.map((loc, i) => {
-          const origIdx = updatedRoute.findIndex(
-            (s) =>
-              s.lat.toFixed(5) === loc.lat.toFixed(5) &&
-              s.lng.toFixed(5) === loc.lng.toFixed(5),
-          );
-          const isCompleted = completedStops.has(origIdx);
-          const isDisrupted = disruptedIndices.has(origIdx);
-          const isRedirected = redirectedIndices.has(origIdx);
+          const isDisrupted = disruptedIndices.has(i);
+          const isRedirected = redirectedIndices.has(i);
 
           let fillColor = getPriorityMarkerColor(loc.priority);
           let label = `${i + 1}`;
           let opacity = 1;
           let strokeColor = "#000";
+          let scale = 14;
 
-          if (isCompleted) {
-            fillColor = "#22C55E";
-            label = "✓";
-            opacity = 0.55;
-          }
           if (isDisrupted) {
             fillColor = "#6B7280";
             label = "✕";
             opacity = 0.55;
             strokeColor = "#EF4444";
-          }
-          if (isRedirected) {
+            scale = 12;
+          } else if (isRedirected) {
             fillColor = "#A855F7";
             label = "→";
             opacity = 0.85;
@@ -2324,18 +2384,19 @@ const RouteOptimizer = () => {
             map,
             label: {
               text: label,
-              color: isCompleted || isDisrupted ? "#fff" : "#000",
+              color: isDisrupted ? "#fff" : "#000",
               fontWeight: "bold",
-              fontSize: "12px",
+              fontSize: "11px",
             },
             icon: {
               path: window.google.maps.SymbolPath.CIRCLE,
-              scale: 14,
+              scale,
               fillColor,
               fillOpacity: opacity,
               strokeColor,
               strokeWeight: 2,
             },
+            zIndex: 10,
           });
           return { marker, ...loc };
         });
@@ -2541,7 +2602,7 @@ const RouteOptimizer = () => {
     setRelocationStep("decision");
   };
 
-  /** Postman will handle the relocated stop themselves — update stop in route and re-optimise */
+  /** Customer has moved — update stop in route and re-optimise immediately */
   const confirmSelfHandleRelocation = () => {
     if (!routeResults || relocationTarget === null || !newRelocationAddress)
       return;
@@ -2585,18 +2646,27 @@ const RouteOptimizer = () => {
         stopIndex: relocationTarget,
         oldAddress: routeResults.optimizedRoute[relocationTarget].name,
         newAddress: newRelocationAddress.name,
-        detourKm: detourInfo?.distanceKm,
+        detourKm: haversineKm(
+          {
+            lat: routeResults.optimizedRoute[relocationTarget].lat,
+            lng: routeResults.optimizedRoute[relocationTarget].lng,
+          },
+          { lat: newRelocationAddress.lat, lng: newRelocationAddress.lng },
+        ),
         action: "self_handle",
         timestamp: new Date(),
       },
       ...prev,
     ]);
 
-    // Trigger full re-optimisation with the updated stop
+    // Clear old route lines then re-optimise to new location
+    clearPriorityPolylines();
+    if (directionsRenderer) directionsRenderer.setDirections({ routes: [] });
     rerouteWithNewPriorities(updatedRoute);
 
     setShowRelocationModal(false);
     setRelocationTarget(null);
+    setNewRelocationAddress(null);
   };
 
   /** Postman cannot reach new address — hand off to nearby postman */
@@ -5066,7 +5136,7 @@ const RouteOptimizer = () => {
         </div>
       )}
 
-      {/* ═══ RECIPIENT RELOCATION MODAL ═══ */}
+      {/* ═══ CUSTOMER RELOCATION MODAL ═══ */}
       {showRelocationModal && relocationTarget !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
           <div className="bg-[#1A1A1A] border border-[#333] rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
@@ -5077,7 +5147,7 @@ const RouteOptimizer = () => {
               </div>
               <div className="flex-1 min-w-0">
                 <h3 className="text-base font-bold text-white">
-                  Recipient Relocated
+                  Customer Relocated
                 </h3>
                 <p className="text-xs text-gray-500 truncate">
                   Stop {relocationTarget + 1} —{" "}
@@ -5090,127 +5160,83 @@ const RouteOptimizer = () => {
               </div>
             </div>
 
-            {/* ── STEP 1: Enter new address ── */}
-            {relocationStep === "input" && (
-              <div className="p-5 space-y-4">
-                <p className="text-xs text-gray-400 leading-relaxed">
-                  The recipient has moved. Search for their new address and the
-                  route will be re-optimised automatically.
-                </p>
-
-                <div className="space-y-2">
-                  <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">
-                    New Delivery Address
-                  </label>
-                  <div className="relative">
-                    <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
-                    <input
-                      ref={relocationInputRef}
-                      type="text"
-                      placeholder="Search new address…"
-                      className="w-full pl-9 pr-4 py-3 bg-black border border-[#333] focus:border-orange-500/60 focus:ring-1 focus:ring-orange-500/30 rounded-xl text-white placeholder-gray-600 text-sm outline-none transition-all"
-                    />
-                  </div>
-                  {newRelocationAddress && (
-                    <div className="flex items-start gap-2 p-3 bg-orange-500/5 border border-orange-500/20 rounded-xl">
-                      <CheckCircle className="w-4 h-4 text-orange-400 flex-shrink-0 mt-0.5" />
-                      <p className="text-xs text-orange-300 font-medium leading-relaxed">
-                        {newRelocationAddress.name}
-                      </p>
-                    </div>
-                  )}
+            {/* ── Body ── */}
+            <div className="p-5 space-y-4">
+              {/* Current address */}
+              <div className="flex items-start gap-3 p-3 bg-black/40 border border-[#2a2a2a] rounded-xl">
+                <div className="w-6 h-6 rounded-full bg-gray-600/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <MapPin className="w-3 h-3 text-gray-400" />
                 </div>
-
-                <div className="flex gap-2 pt-1">
-                  <button
-                    onClick={cancelRelocationModal}
-                    className="flex-1 py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium border border-[#333] rounded-xl"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={calculateRelocationDetour}
-                    disabled={!newRelocationAddress}
-                    className="flex-1 py-2.5 text-sm font-bold rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-orange-500 hover:bg-orange-400 text-white flex items-center justify-center gap-2"
-                  >
-                    <Navigation className="w-4 h-4" />
-                    Calculate Detour
-                  </button>
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-500 font-medium mb-0.5">
+                    Current address
+                  </p>
+                  <p className="text-xs text-gray-300 leading-relaxed line-through opacity-60">
+                    {
+                      routeResults?.optimizedRoute[
+                        relocationTarget
+                      ]?.name?.split(",")[0]
+                    }
+                  </p>
                 </div>
               </div>
-            )}
 
-            {/* ── STEP 2: Confirm relocation ── */}
-            {relocationStep === "decision" && detourInfo && (
-              <div className="p-5 space-y-4">
-                {/* Detour summary */}
-                <div className="p-4 rounded-xl border border-[#2a2a2a] bg-black/40 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-400 font-medium">
-                      Detour Distance
-                    </span>
-                    <span
-                      className={`text-lg font-bold ${detourInfo.distanceKm <= 2 ? "text-green-400" : detourInfo.distanceKm <= 5 ? "text-[#FFC000]" : "text-red-400"}`}
-                    >
-                      {detourInfo.distanceKm.toFixed(2)} km
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-400 font-medium">
-                      New Address
-                    </span>
-                    <span className="text-xs text-white font-medium text-right max-w-[180px] truncate">
-                      {newRelocationAddress?.name?.split(",")[0]}
-                    </span>
-                  </div>
-                  {/* Distance bar */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-gray-600">0 km</span>
-                      <span className="text-xs text-gray-600">5+ km</span>
-                    </div>
-                    <div className="h-2 bg-[#2a2a2a] rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{
-                          width: `${Math.min(100, (detourInfo.distanceKm / 5) * 100)}%`,
-                          backgroundColor:
-                            detourInfo.distanceKm <= 2
-                              ? "#22C55E"
-                              : detourInfo.distanceKm <= 5
-                                ? "#FFC000"
-                                : "#EF4444",
-                        }}
-                      />
-                    </div>
-                  </div>
+              {/* Arrow */}
+              <div className="flex items-center justify-center">
+                <div className="flex items-center gap-2 text-orange-400">
+                  <div className="h-px w-8 bg-orange-500/30" />
+                  <ArrowRight className="w-4 h-4" />
+                  <div className="h-px w-8 bg-orange-500/30" />
                 </div>
+              </div>
 
-                {/* Confirm button */}
-                <div className="flex gap-2">
-                  <button
-                    onClick={cancelRelocationModal}
-                    className="flex-1 py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium border border-[#333] rounded-xl"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={confirmSelfHandleRelocation}
-                    className="flex-1 py-2.5 text-sm font-bold rounded-xl bg-orange-500 hover:bg-orange-400 text-white flex items-center justify-center gap-2 transition-all"
-                  >
-                    <Navigation className="w-4 h-4" />
-                    Confirm &amp; Re-optimise
-                  </button>
+              {/* New address input */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">
+                  New Delivery Address
+                </label>
+                <div className="relative">
+                  <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+                  <input
+                    ref={relocationInputRef}
+                    type="text"
+                    placeholder="Search new address…"
+                    className="w-full pl-9 pr-4 py-3 bg-black border border-[#333] focus:border-orange-500/60 focus:ring-1 focus:ring-orange-500/30 rounded-xl text-white placeholder-gray-600 text-sm outline-none transition-all"
+                  />
                 </div>
+                {newRelocationAddress && (
+                  <div className="flex items-start gap-2 p-3 bg-orange-500/5 border border-orange-500/20 rounded-xl">
+                    <CheckCircle className="w-4 h-4 text-orange-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-orange-300 font-medium leading-relaxed">
+                      {newRelocationAddress.name}
+                    </p>
+                  </div>
+                )}
+              </div>
 
+              {/* Info note */}
+              <p className="text-xs text-gray-600 leading-relaxed text-center">
+                The route will automatically re-optimise to the new location.
+              </p>
+
+              {/* Actions */}
+              <div className="flex gap-2 pt-1">
                 <button
-                  onClick={() => setRelocationStep("input")}
-                  className="w-full py-1.5 text-xs text-gray-600 hover:text-gray-400 transition-colors font-medium"
+                  onClick={cancelRelocationModal}
+                  className="flex-1 py-2.5 text-sm text-gray-500 hover:text-white transition-colors font-medium border border-[#333] rounded-xl"
                 >
-                  ← Change Address
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmSelfHandleRelocation}
+                  disabled={!newRelocationAddress}
+                  className="flex-1 py-2.5 text-sm font-bold rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-orange-500 hover:bg-orange-400 text-white flex items-center justify-center gap-2"
+                >
+                  <Navigation className="w-4 h-4" />
+                  Update Route
                 </button>
               </div>
-            )}
+            </div>
           </div>
         </div>
       )}
@@ -5267,6 +5293,166 @@ const RouteOptimizer = () => {
           </div>
         </div>
       )}
+
+      {/* ═══ ALL DELIVERIES COMPLETE — SUCCESS MODAL ═══ */}
+      {showDeliverySuccess &&
+        (() => {
+          const allStops = routeResults?.optimizedRoute ?? [];
+          const relocatedIndexes = new Set(
+            relocationEvents.map((e) => e.stopIndex),
+          );
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm px-4 py-6">
+              <div className="bg-[#1A1A1A] border border-green-500/30 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                {/* ── Header ── */}
+                <div className="flex flex-col items-center justify-center px-6 pt-7 pb-5 bg-green-500/5 border-b border-green-500/20 flex-shrink-0">
+                  <div className="w-16 h-16 rounded-full bg-green-500/10 border-2 border-green-500/40 flex items-center justify-center mb-3">
+                    <CheckCircle className="w-8 h-8 text-green-400" />
+                  </div>
+                  <h2 className="text-lg font-bold text-white">
+                    All Deliveries Complete!
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Every stop has been delivered successfully.
+                  </p>
+
+                  {/* ── Stats row ── */}
+                  <div className="flex gap-3 mt-4 w-full">
+                    <div className="flex-1 p-2.5 bg-black/40 border border-[#2a2a2a] rounded-xl text-center">
+                      <p className="text-xs text-gray-500 mb-0.5">
+                        Total Stops
+                      </p>
+                      <p className="text-xl font-bold text-white">
+                        {allStops.length}
+                      </p>
+                    </div>
+                    <div className="flex-1 p-2.5 bg-black/40 border border-green-500/20 rounded-xl text-center">
+                      <p className="text-xs text-gray-500 mb-0.5">Delivered</p>
+                      <p className="text-xl font-bold text-green-400">
+                        {allStops.length - relocatedIndexes.size}
+                      </p>
+                    </div>
+                    <div className="flex-1 p-2.5 bg-black/40 border border-orange-500/20 rounded-xl text-center">
+                      <p className="text-xs text-gray-500 mb-0.5">Relocated</p>
+                      <p className="text-xl font-bold text-orange-400">
+                        {relocatedIndexes.size}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── Stop-by-stop breakdown ── */}
+                <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+                  {allStops.map((stop, i) => {
+                    const isRelocated = relocatedIndexes.has(i);
+                    const relocEvent = relocationEvents.find(
+                      (e) => e.stopIndex === i,
+                    );
+                    return (
+                      <div
+                        key={i}
+                        className={`rounded-xl border p-3 ${
+                          isRelocated
+                            ? "bg-orange-500/5 border-orange-500/20"
+                            : "bg-green-500/5 border-green-500/15"
+                        }`}
+                      >
+                        <div className="flex items-start gap-2.5">
+                          {/* Stop number badge */}
+                          <div
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 text-xs font-bold ${
+                              isRelocated
+                                ? "bg-orange-500/20 text-orange-300"
+                                : "bg-green-500/20 text-green-300"
+                            }`}
+                          >
+                            {i + 1}
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            {/* Status tag */}
+                            <div className="flex items-center gap-1.5 mb-1">
+                              {isRelocated ? (
+                                <span className="flex items-center gap-1 text-xs font-bold text-orange-400">
+                                  <MapPin className="w-3 h-3" /> Relocated
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1 text-xs font-bold text-green-400">
+                                  <CheckCircle className="w-3 h-3" /> Delivered
+                                </span>
+                              )}
+                              {stop.priority && (
+                                <span
+                                  className={`text-xs font-bold px-1.5 py-0.5 rounded ${PRIORITIES[stop.priority]?.bg} ${PRIORITIES[stop.priority]?.color}`}
+                                >
+                                  {PRIORITIES[stop.priority]?.label}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Address */}
+                            {isRelocated && relocEvent ? (
+                              <div className="space-y-0.5">
+                                <p className="text-xs text-gray-500 line-through leading-tight">
+                                  {relocEvent.oldAddress?.split(",")[0]}
+                                </p>
+                                <div className="flex items-center gap-1">
+                                  <ArrowRight className="w-3 h-3 text-orange-400 flex-shrink-0" />
+                                  <p className="text-xs text-orange-200 font-medium leading-tight truncate">
+                                    {relocEvent.newAddress?.split(",")[0]}
+                                  </p>
+                                </div>
+                                {relocEvent.detourKm != null && (
+                                  <p className="text-xs text-gray-600 mt-0.5">
+                                    +{relocEvent.detourKm.toFixed(2)} km detour
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-gray-300 leading-tight truncate">
+                                {stop.name?.split(",")[0]}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* ── Back to planner ── */}
+                <div className="p-4 border-t border-[#2a2a2a] flex-shrink-0">
+                  <button
+                    onClick={() => {
+                      setShowDeliverySuccess(false);
+                      setDeliveryMode(false);
+                      setSessionId(null);
+                      setCurrentStopIdx(0);
+                      setCompletedStops(new Set());
+                      setDisruptions([]);
+                      setRerouteResult(null);
+                      setRelocationEvents([]);
+                      setAutoRelocationAlerts([]);
+                      clearPriorityPolylines();
+                      if (directionsRenderer)
+                        directionsRenderer.setDirections({ routes: [] });
+                      clientSnapshotRef.current = {};
+                      clearInterval(clientPollRef.current);
+                      completedMarkersRef.current.forEach((m) =>
+                        m?.setMap(null),
+                      );
+                      completedMarkersRef.current = [];
+                    }}
+                    className="w-full py-3 bg-green-500 hover:bg-green-400 text-white font-bold text-sm rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-green-500/20"
+                  >
+                    <CheckCheck className="w-4 h-4" />
+                    Done — Back to Planner
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
     </div>
   );
 };
