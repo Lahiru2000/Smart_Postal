@@ -1137,217 +1137,121 @@ const RouteOptimizer = () => {
         },
       };
 
-      // Calculate base route metrics first
-      directionsService.route(baseRequest, async (baseResult, baseStatus) => {
-        if (baseStatus !== "OK") {
+      directionsService.route(baseRequest, (baseResult, baseStatus) => {
+        if (baseStatus === "OK") {
+          let baseTotalDuration = 0,
+            baseTotalDistance = 0;
+          baseResult.routes[0].legs.forEach((leg) => {
+            baseTotalDuration += leg.duration.value;
+            baseTotalDistance += leg.distance.value;
+          });
+          setBaseRouteMetrics({
+            totalDuration: baseTotalDuration,
+            totalDistance: baseTotalDistance,
+          });
+        }
+      });
+
+      // ── STEP 2: OPTIMIZED route ──
+      const startFrom = startPoint || allLocations[0];
+      if (!startPoint)
+        setStartPoint({
+          lat: allLocations[0].lat,
+          lng: allLocations[0].lng,
+          name: allLocations[0].name,
+        });
+      const sorted = priorityNearestNeighborSort(allLocations, startFrom);
+
+      const origin = sorted[0];
+      const destination = sorted[sorted.length - 1];
+      const waypoints = sorted.slice(1, -1);
+
+      const request = {
+        origin: new window.google.maps.LatLng(origin.lat, origin.lng),
+        destination: new window.google.maps.LatLng(
+          destination.lat,
+          destination.lng,
+        ),
+        waypoints: waypoints.map((w) => ({
+          location: new window.google.maps.LatLng(w.lat, w.lng),
+          stopover: true,
+        })),
+        optimizeWaypoints: false,
+        travelMode: "DRIVING",
+        drivingOptions: {
+          departureTime: new Date(),
+          trafficModel: "bestguess",
+        },
+      };
+
+      directionsService.route(request, async (result, status) => {
+        if (status !== "OK") {
           setError(
-            `Route calculation failed: ${baseStatus}. Try different locations.`,
+            `Route calculation failed: ${status}. Try different locations.`,
           );
           setOptimizing(false);
           return;
         }
+        directionsRenderer.setDirections(result);
 
-        let baseTotalDuration = 0,
-          baseTotalDistance = 0;
-        baseResult.routes[0].legs.forEach((leg) => {
-          baseTotalDuration += leg.duration.value;
-          baseTotalDistance += leg.distance.value;
-        });
-        setBaseRouteMetrics({
-          totalDuration: baseTotalDuration,
-          totalDistance: baseTotalDistance,
+        let totalDuration = 0,
+          totalDistance = 0;
+        result.routes[0].legs.forEach((leg) => {
+          totalDuration += leg.duration.value;
+          totalDistance += leg.distance.value;
         });
 
-        // ── STEP 2: Try PRIORITY-BASED optimization ──
-        const startFrom = startPoint || allLocations[0];
-        if (!startPoint)
-          setStartPoint({
-            lat: allLocations[0].lat,
-            lng: allLocations[0].lng,
-            name: allLocations[0].name,
+        const optimizedRoute = sorted;
+        const googleMapsUrl = `https://www.google.com/maps/dir/${optimizedRoute
+          .map((l) => `${l.lat},${l.lng}`)
+          .join("/")}`;
+
+        setRouteResults({
+          totalDuration,
+          totalDistance,
+          optimizedRoute,
+          googleMapsUrl,
+          legs: result.routes[0].legs,
+        });
+
+        drawPriorityPolylines(result, optimizedRoute);
+
+        markers.forEach((m) => m.marker.setMap(null));
+        const newMarkers = optimizedRoute.map((loc, i) => {
+          const marker = new window.google.maps.Marker({
+            position: { lat: loc.lat, lng: loc.lng },
+            map,
+            label: {
+              text: `${i + 1}`,
+              color: "#000",
+              fontWeight: "bold",
+              fontSize: "12px",
+            },
+            icon: {
+              path: window.google.maps.SymbolPath.CIRCLE,
+              scale: 14,
+              fillColor: getPriorityMarkerColor(loc.priority),
+              fillOpacity: 1,
+              strokeColor: "#000",
+              strokeWeight: 2,
+            },
           });
-        const sorted = priorityNearestNeighborSort(allLocations, startFrom);
+          return {
+            marker,
+            name: loc.name,
+            lat: loc.lat,
+            lng: loc.lng,
+            priority: loc.priority,
+          };
+        });
+        setMarkers(newMarkers);
 
-        const origin = sorted[0];
-        const destination = sorted[sorted.length - 1];
-        const waypoints = sorted.slice(1, -1);
+        const bounds = new window.google.maps.LatLngBounds();
+        newMarkers.forEach((m) => bounds.extend(m.marker.getPosition()));
+        map.fitBounds(bounds);
 
-        const priorityRequest = {
-          origin: new window.google.maps.LatLng(origin.lat, origin.lng),
-          destination: new window.google.maps.LatLng(
-            destination.lat,
-            destination.lng,
-          ),
-          waypoints: waypoints.map((w) => ({
-            location: new window.google.maps.LatLng(w.lat, w.lng),
-            stopover: true,
-          })),
-          optimizeWaypoints: false,
-          travelMode: "DRIVING",
-          drivingOptions: {
-            departureTime: new Date(),
-            trafficModel: "bestguess",
-          },
-        };
-
-        directionsService.route(
-          priorityRequest,
-          async (priorityResult, priorityStatus) => {
-            if (priorityStatus !== "OK") {
-              setError(
-                `Route calculation failed: ${priorityStatus}. Try different locations.`,
-              );
-              setOptimizing(false);
-              return;
-            }
-
-            let priorityDuration = 0,
-              priorityDistance = 0;
-            priorityResult.routes[0].legs.forEach((leg) => {
-              priorityDuration += leg.duration.value;
-              priorityDistance += leg.distance.value;
-            });
-
-            // ── STEP 3: Try GOOGLE'S optimization as fallback ──
-            const googleOptRequest = {
-              origin: new window.google.maps.LatLng(
-                baseOrigin.lat,
-                baseOrigin.lng,
-              ),
-              destination: new window.google.maps.LatLng(
-                baseDestination.lat,
-                baseDestination.lng,
-              ),
-              waypoints: baseWaypoints.map((w) => ({
-                location: new window.google.maps.LatLng(w.lat, w.lng),
-                stopover: true,
-              })),
-              optimizeWaypoints: true, // Let Google optimize
-              travelMode: "DRIVING",
-              drivingOptions: {
-                departureTime: new Date(),
-                trafficModel: "bestguess",
-              },
-            };
-
-            directionsService.route(
-              googleOptRequest,
-              async (googleResult, googleStatus) => {
-                let googleDuration = Infinity,
-                  googleDistance = Infinity,
-                  googleOptRoute = null;
-
-                if (googleStatus === "OK") {
-                  googleDuration = 0;
-                  googleDistance = 0;
-                  googleResult.routes[0].legs.forEach((leg) => {
-                    googleDuration += leg.duration.value;
-                    googleDistance += leg.distance.value;
-                  });
-
-                  // Reconstruct route order from Google's optimization
-                  const waypointOrder =
-                    googleResult.routes[0].waypoint_order || [];
-                  googleOptRoute = [
-                    allLocations[0], // Origin
-                    ...waypointOrder.map((idx) => allLocations[idx + 1]),
-                    allLocations[allLocations.length - 1], // Destination
-                  ];
-                }
-
-                // ── STEP 4: Choose the BEST route (must be better than base) ──
-                let finalResult, finalRoute, finalDuration, finalDistance;
-
-                // Compare all options and choose the best one
-                const isPriorityBetter =
-                  priorityDuration < baseTotalDuration &&
-                  priorityDistance < baseTotalDistance;
-                const isGoogleBetter =
-                  googleDuration < baseTotalDuration &&
-                  googleDistance < baseTotalDistance;
-
-                if (
-                  isPriorityBetter &&
-                  (!isGoogleBetter || priorityDuration <= googleDuration)
-                ) {
-                  // Priority-based is better
-                  finalResult = priorityResult;
-                  finalRoute = sorted;
-                  finalDuration = priorityDuration;
-                  finalDistance = priorityDistance;
-                } else if (isGoogleBetter) {
-                  // Google's optimization is better
-                  finalResult = googleResult;
-                  finalRoute = googleOptRoute;
-                  finalDuration = googleDuration;
-                  finalDistance = googleDistance;
-                } else {
-                  // Neither improved - keep original order
-                  finalResult = baseResult;
-                  finalRoute = allLocations;
-                  finalDuration = baseTotalDuration;
-                  finalDistance = baseTotalDistance;
-                }
-
-                // Display the final route
-                directionsRenderer.setDirections(finalResult);
-
-                const googleMapsUrl = `https://www.google.com/maps/dir/${finalRoute
-                  .map((l) => `${l.lat},${l.lng}`)
-                  .join("/")}`;
-
-                setRouteResults({
-                  totalDuration: finalDuration,
-                  totalDistance: finalDistance,
-                  optimizedRoute: finalRoute,
-                  googleMapsUrl,
-                  legs: finalResult.routes[0].legs,
-                });
-
-                drawPriorityPolylines(finalResult, finalRoute);
-
-                markers.forEach((m) => m.marker.setMap(null));
-                const newMarkers = finalRoute.map((loc, i) => {
-                  const marker = new window.google.maps.Marker({
-                    position: { lat: loc.lat, lng: loc.lng },
-                    map,
-                    label: {
-                      text: `${i + 1}`,
-                      color: "#000",
-                      fontWeight: "bold",
-                      fontSize: "12px",
-                    },
-                    icon: {
-                      path: window.google.maps.SymbolPath.CIRCLE,
-                      scale: 14,
-                      fillColor: getPriorityMarkerColor(loc.priority),
-                      fillOpacity: 1,
-                      strokeColor: "#000",
-                      strokeWeight: 2,
-                    },
-                  });
-                  return {
-                    marker,
-                    name: loc.name,
-                    lat: loc.lat,
-                    lng: loc.lng,
-                    priority: loc.priority,
-                  };
-                });
-                setMarkers(newMarkers);
-
-                const bounds = new window.google.maps.LatLngBounds();
-                newMarkers.forEach((m) =>
-                  bounds.extend(m.marker.getPosition()),
-                );
-                map.fitBounds(bounds);
-
-                setOptimizing(false);
-                await fetchRouteWeather(finalResult, finalRoute);
-              },
-            );
-          },
-        );
+        setOptimizing(false);
+        await fetchRouteWeather(result, optimizedRoute);
       });
     } catch (err) {
       console.error("Optimization error:", err);
