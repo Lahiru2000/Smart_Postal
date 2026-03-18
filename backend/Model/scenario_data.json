@@ -1,0 +1,126 @@
+{
+  "delivery_points": [
+    {
+      "id": 0,
+      "name": "Distribution Center",
+      "latitude": 6.9271,
+      "longitude": 79.8612,
+      "parcels": 0,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 1,
+      "name": "Location_1",
+      "latitude": 6.9707165332667715,
+      "longitude": 79.85019077455595,
+      "parcels": 5,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 0,
+      "name": "Location_2",
+      "latitude": 6.961805378472833,
+      "longitude": 79.93170481914464,
+      "parcels": 5,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 3,
+      "name": "Location_3",
+      "latitude": 6.944050330428214,
+      "longitude": 79.99298268251292,
+      "parcels": 3,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 4,
+      "name": "Location_4",
+      "latitude": 6.803611692170594,
+      "longitude": 79.81160313494115,
+      "parcels": 1,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 5,
+      "name": "Location_5",
+      "latitude": 7.075854819136231,
+      "longitude": 79.97657520496287,
+      "parcels": 1,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 6,
+      "name": "Location_6",
+      "latitude": 6.821325956306295,
+      "longitude": 79.9007256644809,
+      "parcels": 9,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 7,
+      "name": "Location_7",
+      "latitude": 7.018904087266558,
+      "longitude": 79.7243753466011,
+      "parcels": 9,
+      "urgent": 1,
+      "time_window": 2.524294808697607
+    },
+    {
+      "id": 8,
+      "name": "Location_8",
+      "latitude": 6.90265271040613,
+      "longitude": 79.81878365135013,
+      "parcels": 5,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 9,
+      "name": "Location_9",
+      "latitude": 6.8561470029067,
+      "longitude": 79.99758580397808,
+      "parcels": 7,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 10,
+      "name": "Location_10",
+      "latitude": 6.959196153421788,
+      "longitude": 79.81351961542738,
+      "parcels": 10,
+      "urgent": 1,
+      "time_window": 3.269128643016166
+    },
+    {
+      "id": 11,
+      "name": "Location_11",
+      "latitude": 7.068715706820809,
+      "longitude": 79.88652709502814,
+      "parcels": 6,
+      "urgent": 0,
+      "time_window": null
+    },
+    {
+      "id": 12,
+      "name": "Location_12",
+      "latitude": 7.065981033706242,
+      "longitude": 79.7890755855655,
+      "parcels": 1,
+      "urgent": 2,
+      "time_window": 2.6584578100890663
+    }
+  ],
+  "traffic_factor": 1.07,
+  "traffic_level": "light",
+  "weather_factor": 0.95,
+  "weather_condition": "clear",
+  "timestamp": "2026-03-09T10:09:09.611249"
+}

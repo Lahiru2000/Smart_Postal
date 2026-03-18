@@ -1,0 +1,22 @@
+{
+  "model1_metrics": {
+    "accuracy": 0.973,
+    "precision": 0.9673024523160763,
+    "recall": 0.9594594594594594,
+    "f1_score": 0.9633649932157394,
+    "roc_auc": 0.9744358644358645,
+    "cv_recall_mean": 0.9526614750343564,
+    "cv_recall_std": 0.015591215414459823,
+    "cv_precision_mean": 0.9697777845233615,
+    "cv_precision_std": 0.006380938575581702
+  },
+  "model2a_best_method": "2opt",
+  "model2a_best_distance": 119.01,
+  "model2b_relocations": 3,
+  "model2b_impact": {
+    "distance_saved_km": -25.99,
+    "time_saved_hours": -1.06,
+    "urgent_improvement": -2,
+    "distance_change_pct": 14.33
+  }
+}
