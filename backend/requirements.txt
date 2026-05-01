@@ -15,7 +15,7 @@ numpy>=1.24.0
 resemblyzer>=0.1.3
 librosa>=0.10.0
 soundfile>=0.12.0
-webrtcvad-wheels>=2.0.10
+webrtcvad-wheels
 
 fastapi
 uvicorn
