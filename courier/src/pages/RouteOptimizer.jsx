@@ -63,7 +63,7 @@ import {
 // ─── API ────────────────────────────────────────────────────────────────────
 const GOOGLE_MAPS_API_KEY =
   import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
-  "AIzaSyBb760vN7Xd17NPIE8q_GhpXCLViUJtr8Q";
+  "AIzaSyCj0bUCiyc2qBwZG9BQKTOnCYU9BQU5pNs";
 
 // ─── PRIORITY CONFIG ────────────────────────────────────────────────────────
 const PRIORITIES = {
