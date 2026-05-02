@@ -444,7 +444,11 @@ const RouteOptimizer = () => {
   const [newRelocationAddress, setNewRelocationAddress] = useState(null); // { lat, lng, name }
   const [detourInfo, setDetourInfo] = useState(null); // { distanceKm, canSelfHandle }
   const [relocationEvents, setRelocationEvents] = useState([]);
-  const [startPoint, setStartPoint] = useState(null);
+  const [startPoint, setStartPoint] = useState({
+    lat: 6.928267529202233,
+    lng: 79.85787776054688,
+    name: "Sri Lanka Post Headquarters, 10 McCallum Rd, Colombo 001000, Sri Lanka",
+  });
   const [rerouteTrigger, setRerouteTrigger] = useState(0);
   const [startMarker, setStartMarker] = useState(null);
 
@@ -995,23 +999,38 @@ const RouteOptimizer = () => {
       return updated;
     });
 
-  // ─── PRIORITY + NEAREST-NEIGHBOR SORT (ENHANCED) ──────────────────────────
-  // Improvements over original:
-  //  1. Weather-severity penalty: stops near storms/heavy rain cost extra km
-  //     so the algorithm avoids routing through bad-weather zones unless forced.
-  //  2. Traffic-delay penalty: legs already flagged heavy by trafficLegs add
-  //     virtual distance so the route avoids them when alternatives exist.
-  //  3. Urgency-proximity bonus: an urgent stop within 1 km is always chosen
-  //     next regardless of tier ordering, preventing counter-intuitive detours.
-  //  4. Same O(n²) complexity — no API calls, runs synchronously.
+  // ─── PRIORITY + DISTANCE COMPOSITE SORT ───────────────────────────────────
+  // Panel fix: distance is now a real input across ALL priority tiers.
+  //
+  // Previous approach used strict tier buckets (urgent → high → normal → low),
+  // meaning an urgent stop 80 km away was always visited before a high stop
+  // 0.5 km away. Distance was only used as a tiebreaker within the same tier.
+  //
+  // New approach: single unified greedy pass with a composite score:
+  //
+  //   effectiveScore = distanceKm − priorityDiscount + weatherPenalty + trafficPenalty
+  //
+  // Priority discounts (km) — make high-priority stops appear closer:
+  //   urgent → 15 km  |  high → 8 km  |  normal → 3 km  |  low → 0 km
+  //
+  // This means a nearby high stop can beat a far urgent stop, but a close
+  // urgent stop still wins over anything else. Distance is a genuine input.
+  //
+  // Example:
+  //   urgent 20 km away  → 20 − 15 = +5  (loses)
+  //   high   5  km away  →  5 −  8 = −3  (wins — much closer)
+  //   urgent 5  km away  →  5 − 15 = −10 (wins — close AND urgent)
+  //
+  // Same O(n²) complexity — no API calls, runs synchronously.
+
+  const PRIORITY_DISCOUNT = { urgent: 15, high: 8, normal: 3, low: 0 };
+
   const priorityNearestNeighborSort = (
     stops,
     startFrom,
     liveWeather = weatherData,
     liveTrafficLegs = trafficLegs,
   ) => {
-    const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
-
     // ── Weather penalty: virtual km added for stops near severe weather ──
     const weatherPenaltyKm = (stop) => {
       if (!liveWeather?.length) return 0;
@@ -1023,16 +1042,14 @@ const RouteOptimizer = () => {
         );
         if (dist < 8) maxSeverity = Math.max(maxSeverity, w.severity || 0);
       });
-      // severity 5 (thunderstorm) → +20 km penalty, severity 4 → +12, severity 3 → +6
+      // severity 5 (thunderstorm) → +20 km, severity 4 → +12, severity 3 → +6
       if (maxSeverity >= 5) return 20;
       if (maxSeverity >= 4) return 12;
       if (maxSeverity >= 3) return 6;
       return 0;
     };
 
-    // ── Traffic penalty: virtual km for a leg that is currently congested ──
-    // liveTrafficLegs[i] covers stop i → stop i+1 in the CURRENT route order.
-    // We use stop name matching as a proxy since indices may have shifted.
+    // ── Traffic penalty: virtual km for a congested leg ──
     const trafficPenaltyKm = (stop) => {
       if (!liveTrafficLegs?.length) return 0;
       const leg = liveTrafficLegs.find((l) =>
@@ -1046,51 +1063,36 @@ const RouteOptimizer = () => {
       return 0;
     };
 
-    // Build priority buckets
-    const buckets = {};
-    PRIORITY_ORDER.forEach((p) => (buckets[p] = []));
-    stops.forEach((s) => {
-      const tier = PRIORITY_ORDER.includes(s.priority) ? s.priority : "normal";
-      buckets[tier].push(s);
-    });
-
+    // ── Single unified greedy pass — no tier buckets ──
+    // Each candidate is scored globally; priority gives a km discount so
+    // high-urgency stops appear closer than they really are, but a large
+    // enough real distance gap still lets a nearer lower-priority stop win.
+    const pool = [...stops];
     const result = [];
     let cursor = startFrom;
 
-    PRIORITY_ORDER.forEach((tier) => {
-      const pool = [...buckets[tier]];
-      while (pool.length > 0) {
-        // ── Urgency-proximity override: urgent stop within 1 km → pick it first ──
-        if (tier === "urgent") {
-          const veryCloseIdx = pool.findIndex(
-            (s) => haversineKm(cursor, s) <= 1.0,
-          );
-          if (veryCloseIdx !== -1) {
-            const chosen = pool.splice(veryCloseIdx, 1)[0];
-            result.push(chosen);
-            cursor = chosen;
-            continue;
-          }
+    while (pool.length > 0) {
+      let bestIdx = 0;
+      let bestScore = Infinity;
+
+      pool.forEach((stop, i) => {
+        const distKm = haversineKm(cursor, stop);
+        const discount =
+          PRIORITY_DISCOUNT[stop.priority] ?? PRIORITY_DISCOUNT.normal;
+        // Lower score = better candidate.
+        // Subtracting the discount makes high-priority stops "appear" closer.
+        const score =
+          distKm - discount + weatherPenaltyKm(stop) + trafficPenaltyKm(stop);
+        if (score < bestScore) {
+          bestScore = score;
+          bestIdx = i;
         }
+      });
 
-        // ── Composite score: distance + weather penalty + traffic penalty ──
-        let bestIdx = 0;
-        let bestScore = Infinity;
-        pool.forEach((stop, i) => {
-          const distKm = haversineKm(cursor, stop);
-          const score =
-            distKm + weatherPenaltyKm(stop) + trafficPenaltyKm(stop);
-          if (score < bestScore) {
-            bestScore = score;
-            bestIdx = i;
-          }
-        });
-
-        const chosen = pool.splice(bestIdx, 1)[0];
-        result.push(chosen);
-        cursor = chosen;
-      }
-    });
+      const chosen = pool.splice(bestIdx, 1)[0];
+      result.push(chosen);
+      cursor = chosen;
+    }
 
     return result;
   };
@@ -1103,6 +1105,9 @@ const RouteOptimizer = () => {
     }
     setError(null);
     setOptimizing(true);
+    // Reset stale metrics immediately so the Before/After panel never shows
+    // values from a previous optimization run while the new one is in flight.
+    setBaseRouteMetrics(null);
 
     try {
       const allLocations = markers.map((m) => ({
@@ -1114,10 +1119,35 @@ const RouteOptimizer = () => {
 
       const directionsService = new window.google.maps.DirectionsService();
 
-      // ── STEP 1: BASE route (original order) ──
-      const baseOrigin = allLocations[0];
-      const baseDestination = allLocations[allLocations.length - 1];
-      const baseWaypoints = allLocations.slice(1, -1);
+      // ── Resolve the effective start point first ──
+      // Both the base route and the optimized route MUST share the same origin
+      // so that Before vs After compares apples-to-apples.  Previously the base
+      // route always used allLocations[0] while the optimized route used
+      // startPoint — a different location — making the comparison invalid.
+      const effectiveStart = startPoint || allLocations[0];
+      if (!startPoint)
+        setStartPoint({
+          lat: allLocations[0].lat,
+          lng: allLocations[0].lng,
+          name: allLocations[0].name,
+        });
+
+      // ── STEP 1: BASE route (original user-added order, same start point) ──
+      // Wrapped in a Promise so we can await it, guaranteeing setBaseRouteMetrics
+      // is always called BEFORE setRouteResults.  This eliminates the async race
+      // condition where the optimized route callback used to resolve first,
+      // causing the "Before" value to be stale or swapped with "After".
+      const baseRouteStops = [
+        effectiveStart,
+        ...allLocations.filter(
+          (loc) =>
+            !(loc.lat === effectiveStart.lat && loc.lng === effectiveStart.lng),
+        ),
+      ];
+
+      const baseOrigin = baseRouteStops[0];
+      const baseDestination = baseRouteStops[baseRouteStops.length - 1];
+      const baseWaypoints = baseRouteStops.slice(1, -1);
 
       const baseRequest = {
         origin: new window.google.maps.LatLng(baseOrigin.lat, baseOrigin.lng),
@@ -1137,30 +1167,27 @@ const RouteOptimizer = () => {
         },
       };
 
-      directionsService.route(baseRequest, (baseResult, baseStatus) => {
-        if (baseStatus === "OK") {
-          let baseTotalDuration = 0,
-            baseTotalDistance = 0;
-          baseResult.routes[0].legs.forEach((leg) => {
-            baseTotalDuration += leg.duration.value;
-            baseTotalDistance += leg.distance.value;
-          });
-          setBaseRouteMetrics({
-            totalDuration: baseTotalDuration,
-            totalDistance: baseTotalDistance,
-          });
-        }
+      // Await base route so Before is ALWAYS set before After
+      await new Promise((resolve) => {
+        directionsService.route(baseRequest, (baseResult, baseStatus) => {
+          if (baseStatus === "OK") {
+            let baseTotalDuration = 0,
+              baseTotalDistance = 0;
+            baseResult.routes[0].legs.forEach((leg) => {
+              baseTotalDuration += leg.duration.value;
+              baseTotalDistance += leg.distance.value;
+            });
+            setBaseRouteMetrics({
+              totalDuration: baseTotalDuration,
+              totalDistance: baseTotalDistance,
+            });
+          }
+          resolve(); // always advance even if base route fails
+        });
       });
 
-      // ── STEP 2: OPTIMIZED route ──
-      const startFrom = startPoint || allLocations[0];
-      if (!startPoint)
-        setStartPoint({
-          lat: allLocations[0].lat,
-          lng: allLocations[0].lng,
-          name: allLocations[0].name,
-        });
-      const sorted = priorityNearestNeighborSort(allLocations, startFrom);
+      // ── STEP 2: OPTIMIZED route (same start point, priority+distance sort) ──
+      const sorted = priorityNearestNeighborSort(allLocations, effectiveStart);
 
       const origin = sorted[0];
       const destination = sorted[sorted.length - 1];
@@ -1201,7 +1228,26 @@ const RouteOptimizer = () => {
           totalDistance += leg.distance.value;
         });
 
-        const optimizedRoute = sorted;
+        // ── Attach per-leg distance & duration to each stop ──
+        // legs[i] = travel FROM sorted[i] TO sorted[i+1].
+        // We store it on the destination stop (sorted[i+1]) as distanceFromPrev
+        // and durationFromPrev so every stop card can show "X km from last stop".
+        const optimizedRoute = sorted.map((stop, i) => {
+          if (i === 0) {
+            return {
+              ...stop,
+              distanceFromPrev: 0, // start point — no previous leg
+              durationFromPrev: 0,
+            };
+          }
+          const leg = result.routes[0].legs[i - 1];
+          return {
+            ...stop,
+            distanceFromPrev: leg ? leg.distance.value : 0, // metres
+            durationFromPrev: leg ? leg.duration.value : 0, // seconds
+          };
+        });
+
         const googleMapsUrl = `https://www.google.com/maps/dir/${optimizedRoute
           .map((l) => `${l.lat},${l.lng}`)
           .join("/")}`;
@@ -3293,6 +3339,7 @@ const RouteOptimizer = () => {
                             <p className="text-xs text-white truncate font-medium">
                               {m.name?.split(",")[0]}
                             </p>
+
                             {/* Status badges */}
                             {status === "current" && (
                               <span className="inline-flex items-center gap-1 text-xs text-[#FFC000] font-bold">
@@ -4740,9 +4787,11 @@ const RouteOptimizer = () => {
                                         >
                                           {loc.routeIndex + 1}
                                         </div>
-                                        <p className="text-sm text-gray-300 truncate flex-1">
-                                          {loc.name?.split(",")[0]}
-                                        </p>
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-sm text-gray-300 truncate">
+                                            {loc.name?.split(",")[0]}
+                                          </p>
+                                        </div>
                                       </div>
                                     ))}
                                   </div>
@@ -4806,9 +4855,11 @@ const RouteOptimizer = () => {
                               >
                                 {i + 1}
                               </div>
-                              <p className="text-sm text-gray-300 truncate flex-1">
-                                {loc.name?.split(",")[0]}
-                              </p>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm text-gray-300 truncate">
+                                  {loc.name?.split(",")[0]}
+                                </p>
+                              </div>
                             </div>
                           ))}
                         </div>
