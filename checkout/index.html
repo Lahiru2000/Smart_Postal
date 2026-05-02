@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Checkout – Apple</title>
+  <title>Checkout – SmartPostal</title>
   <style>
     /* ── Reset & Base ─────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -579,6 +579,146 @@
       to { transform: rotate(360deg); }
     }
 
+    /* ── Sinhala Prompt Card ────────────────────────── */
+    .sinhala-prompt-card {
+      background: linear-gradient(135deg, #f0f7ff 0%, #e8f4fd 100%);
+      border: 1.5px solid #b3d7f7;
+      border-radius: 0.75rem;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1.25rem;
+      position: relative;
+      transition: all 0.3s ease;
+    }
+
+    .sinhala-prompt-card.recording-active {
+      border-color: #ff3b30;
+      background: linear-gradient(135deg, #fff5f5 0%, #fff0ef 100%);
+      box-shadow: 0 0 0 3px rgba(255,59,48,.08);
+    }
+
+    .sinhala-prompt-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+    }
+
+    .sinhala-prompt-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #0071e3;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .sinhala-prompt-label.recording-active {
+      color: #ff3b30;
+    }
+
+    .sinhala-refresh-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 1rem;
+      color: #86868b;
+      padding: 0.2rem;
+      border-radius: 0.25rem;
+      transition: all 0.15s;
+      line-height: 1;
+      width: auto;
+    }
+
+    .sinhala-refresh-btn:hover {
+      color: #0071e3;
+      background: rgba(0,113,227,.08);
+    }
+
+    .sinhala-refresh-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .sinhala-sentence {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #1d1d1f;
+      line-height: 1.6;
+      margin-bottom: 0.5rem;
+      /* Ensure Sinhala Unicode renders correctly */
+      font-family: 'Iskoola Pota', 'Noto Sans Sinhala', -apple-system, sans-serif;
+    }
+
+    .sinhala-transliteration {
+      font-size: 0.8125rem;
+      color: #86868b;
+      font-style: italic;
+      line-height: 1.5;
+    }
+
+    /* ── Countdown Ring ─────────────────────────────── */
+    .countdown-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .countdown-ring-container {
+      position: relative;
+      width: 64px;
+      height: 64px;
+    }
+
+    .countdown-ring-container svg {
+      transform: rotate(-90deg);
+    }
+
+    .countdown-ring-bg {
+      fill: none;
+      stroke: #e5e5e7;
+      stroke-width: 4;
+    }
+
+    .countdown-ring-fill {
+      fill: none;
+      stroke: #0071e3;
+      stroke-width: 4;
+      stroke-linecap: round;
+      transition: stroke-dashoffset 1s linear, stroke 0.3s;
+    }
+
+    .countdown-ring-fill.urgent {
+      stroke: #ff9500;
+    }
+
+    .countdown-ring-fill.critical {
+      stroke: #ff3b30;
+    }
+
+    .countdown-number {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.125rem;
+      font-weight: 700;
+      color: #1d1d1f;
+    }
+
+    .countdown-number.urgent { color: #ff9500; }
+    .countdown-number.critical { color: #ff3b30; }
+
+    .countdown-label {
+      font-size: 0.75rem;
+      color: #86868b;
+      font-weight: 500;
+    }
+
     /* ── Responsive ───────────────────────────────── */
     @media (max-width: 768px) {
       .checkout-wrapper {
@@ -609,6 +749,10 @@
 
       .container {
         padding: 1.5rem;
+      }
+
+      .sinhala-sentence {
+        font-size: 1.1rem;
       }
     }
 
@@ -716,11 +860,11 @@
           <div class="row">
             <div class="form-group">
               <label>City</label>
-              <input type="text" placeholder="Beirut" />
+              <input type="text" placeholder="Colombo" />
             </div>
             <div class="form-group">
               <label>Postal Code</label>
-              <input type="text" placeholder="12345" />
+              <input type="text" placeholder="00100" />
             </div>
           </div>
         </div>
@@ -766,7 +910,7 @@
             <div class="enrollment-checklist">
               <div class="checklist-item">Each sample verified by AI for authenticity</div>
               <div class="checklist-item">All samples must be from the same person</div>
-              <div class="checklist-item">Takes less than 2 minutes total</div>
+              <div class="checklist-item">Read the displayed Sinhala sentence aloud (≈15 sec)</div>
               <div class="checklist-item">Enables secure package verification</div>
             </div>
             <button class="btn btn-primary" onclick="handleStartEnrollment()" style="margin-top: 1.5rem;">Start enrollment</button>
@@ -793,9 +937,42 @@
               <p style="text-align: center; font-size: 0.75rem; color: #86868b; margin-top: 0.75rem;" id="progressText">0/3 samples verified</p>
             </div>
 
-            <div style="text-align: center; background: #f5f5f7; border-radius: 0.75rem; padding: 2rem 1rem; margin-bottom: 1rem;">
-              <h3 style="font-size: 0.9375rem; font-weight: 600; color: #1d1d1f; margin-bottom: 0.3rem;" id="recordTitle">Record voice sample 1</h3>
-              <p style="color: #86868b; font-size: 0.8125rem; margin-bottom: 1.5rem;">Speak naturally for 5–10 seconds</p>
+            <div style="text-align: center; margin-bottom: 0.75rem;">
+              <h3 style="font-size: 0.9375rem; font-weight: 600; color: #1d1d1f;" id="recordTitle">Record voice sample 1</h3>
+            </div>
+
+            <!-- ── Sinhala Sentence Prompt ── -->
+            <div class="sinhala-prompt-card" id="sinhalaPromptCard">
+              <div class="sinhala-prompt-header">
+                <span class="sinhala-prompt-label" id="sinhalaPromptLabel">
+                  🇱🇰 Read this sentence aloud
+                </span>
+                <button class="sinhala-refresh-btn" id="sinhalaRefreshBtn" onclick="refreshSentence()" title="Get a different sentence">
+                  🔄
+                </button>
+              </div>
+              <div class="sinhala-sentence" id="sinhalaSentence">—</div>
+              <div class="sinhala-transliteration" id="sinhalaTranslit">—</div>
+            </div>
+
+            <div style="text-align: center; background: #f5f5f7; border-radius: 0.75rem; padding: 1.5rem 1rem; margin-bottom: 1rem;">
+              <p style="color: #86868b; font-size: 0.8125rem; margin-bottom: 1.25rem;">
+                Tap the mic, then read the sentence above. Recording stops automatically after 15 seconds.
+              </p>
+
+              <!-- Countdown Ring (shown while recording) -->
+              <div class="countdown-wrapper hidden" id="countdownWrapper">
+                <div class="countdown-ring-container">
+                  <svg width="64" height="64" viewBox="0 0 64 64">
+                    <circle class="countdown-ring-bg" cx="32" cy="32" r="28"/>
+                    <circle class="countdown-ring-fill" id="countdownRingFill" cx="32" cy="32" r="28"
+                      stroke-dasharray="175.93"
+                      stroke-dashoffset="0"/>
+                  </svg>
+                  <div class="countdown-number" id="countdownNumber">15</div>
+                </div>
+                <div class="countdown-label" id="countdownLabel">seconds remaining</div>
+              </div>
 
               <button class="mic-btn" id="micBtn" onclick="handleMicToggle()" disabled>
                 <span id="micIcon">🎙️</span>
@@ -815,7 +992,7 @@
       <div class="right-section">
         <!-- Product Summary -->
         <div class="product-card">
-          <div class="product-image"><img src="https://i.ibb.co/QvcFkVnX/download.jpg" alt="Wireless Earbuds Pro X3" style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 0.5rem;" /></div>
+          <div class="product-image"><img src="https://i.ibb.co/QvcFkVnX/download.jpg" alt="iPhone 17 Pro Max" style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 0.5rem;" /></div>
           <div class="product-title">17 Pro Max</div>
           <div class="product-spec">Electronics – Fragile • 0.35 kg</div>
           <div class="product-price">$1200</div>
@@ -848,9 +1025,6 @@
             <span>$1210.00</span>
           </div>
         </div>
-
-        <!-- Sender Info -->
-         
       </div>
     </div>
 
@@ -881,6 +1055,171 @@
 </div>
 
 <script>
+// ═══════════════════════════════════════════════════════════════
+//  SINHALA SENTENCES POOL
+//  Each entry: { si: "Sinhala text", translit: "Romanized hint" }
+//  Chosen to be ~15 seconds of natural speech at moderate pace.
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+//  SINHALA SENTENCES POOL
+//
+//  Target: ~15 seconds of natural speech per sentence.
+//  Sinhala average pace ≈ 120–140 words/min → need ~30–35 words.
+//  Each sentence below has been written to hit that range.
+// ─────────────────────────────────────────────────────────────
+export const SINHALA_SENTENCES = [
+    {
+    // ~34 words
+    si: 'අද උදෑසන ආරම්භ කළ වැඩ කටයුතු මධ්‍යහනය වනවිට සාර්ථකව අවසන් කළ හැකි බව මා විශ්වාස කරමි. අවශ්‍ය සියලු තොරතුරු නිවැරදිව සකස් කර ඇති බැවින් වැඩ කටයුතු ඉතා සුමටව සිදු වේ.',
+    translit: 'Ada udæsana ārambha kaḷa væḍa kaṭayuthu madhyahanya vanavita sārthakava avasan kaḷa hæki bava mā viśvāsa karami. Avaśya siyalu thorathuru niværadivā sakas kara æti bævin væḍa kaṭayuthu itā sumaṭava sidu vē.',
+  },
+  {
+    // ~33 words
+    si: 'පරිගණක පද්ධතිය නිවැරදිව ක්‍රියාත්මක වන බව තහවුරු කිරීම සඳහා මම සෑම දිනකම පරීක්ෂා කරමි. කිසියම් දෝෂයක් හඳුනා ගන්නේ නම් එය වහාම නිවැරදි කිරීමට කටයුතු කරමි.',
+    translit: 'Parigaṇaka paddhathiya niværadivā kriyāthmaka vana bava thahavuru kirīma sandahā mama sæma dinakama parīkṣā karami. Kisiyam dōṣayak haḍunā gannē nam eya vahāma niværadi kirīmata kaṭayuthu karami.',
+  },
+  {
+    // ~35 words
+    si: 'සවස වෙලාවට නිවසට පැමිණෙන විට, අද දිනයේ සිදු කළ සියලු කාර්යයන් පිළිබඳව සමාලෝචනය කිරීම මට පුරුද්දක් වී ඇත. මෙය ඉදිරි දිනවල වැඩ සැලසුම් කිරීමට උපකාරී වේ.',
+    translit: 'Savas velāvata nivasata pæmiṇena viṭa, ada dinayē sidu kaḷa siyalu kāryayan piḷibandava samālōchanaya kirīma mata puruddak vī æta. Meya idirī dinavala væḍa sælasum kirīmata upakārī vē.',
+  },
+  {
+    // ~34 words
+    si: 'මෙම සේවාව භාවිතා කිරීමෙන් කාලය ඉතිරි කර ගත හැකි අතර, වැඩ කටයුතු ඉතා කාර්යක්ෂම ලෙස කළ හැක. ඔබට අවශ්‍ය ඕනෑම වෙලාවක පහසුවෙන් ප්‍රවේශ විය හැකි වේ.',
+    translit: 'Mema sēvāva bhāvithā kirīmen kālaya ithiri kara gatha hæki athara, væḍa kaṭayuthu itā kāryakṣhama lesa kaḷa hæka. Obaṭa avaśya ōnæma velāvak pahasuven pravēśa viya hæki vē.',
+  },
+  {
+    // ~33 words
+    si: 'හෙට දිනට සැලසුම් කර ඇති වැඩසටහන සඳහා අවශ්‍ය සියලු සම්පත් සකස් කර ඇත. කණ්ඩායමේ සියලු සාමාජිකයන් සමඟ සම්බන්ධ වී ඒවා නිවැරදිව ක්‍රියාත්මක කිරීම වැදගත් වේ.',
+    translit: 'Heṭa dinata sælasum kara æti væḍasaṭahana sandahā avaśya siyalu sampath sakas kara æta. Kaṇḍāyame siyalu sāmājikayan samaṅa sambandha vī ēvā niværadivā kriyāthmaka kirīma vædagath vē.',
+  },
+  {
+    // ~35 words
+    si: 'මගේ දිනචරියාව තුළ නියමිත වේලාවට කටයුතු කිරීම මට ඉතා වැදගත් වේ. එමඟින් වැඩ කාර්යක්ෂමතාව වැඩි වන අතර, මාගේ ඉලක්ක සාර්ථකව ලබා ගැනීමට හැකි වේ.',
+    translit: 'Magē dinachariyāva thuḷa niyamitha velāvata kaṭayuthu kirīma mata itā vædagath vē. Emagin væḍa kāryakṣhamathā væḍi vana athara, māgē ilakka sārthakava labā gæṇīmata hæki vē.',
+  },
+  {
+    // ~34 words
+    si: 'ඔබ ලබා දෙන තොරතුරු නිවැරදිව සහ පැහැදිලිව ඇතුළත් කිරීම ඉතා වැදගත් ය. එවිට ක්‍රියාවලිය කඩිනමින් සහ ගැටළු රහිතව ඉදිරියට ගෙන යා හැකි වේ.',
+    translit: 'Oba labā dena thorathuru niværadivā saha pæhædilivā ætuḷath kirīma itā vædagath ya. Evita kriyāvaliya kaḍinamīn saha gæṭaḷu rahithava idiriyata gena yā hæki vē.',
+  },
+  {
+    // ~33 words
+    si: 'නව තාක්ෂණික විසඳුම් භාවිතා කිරීමෙන් අපගේ දෛනික වැඩ කටයුතු ඉතා පහසු වේ. එමඟින් කාලය ඉතිරි වන අතර, නිෂ්පාදන හැකියාව ද සැලකිය යුතු ලෙස ඉහළ යයි.',
+    translit: 'Nava thākṣhaṇika visadum bhāvithā kirīmen apagē dainika væḍa kaṭayuthu itā pahasu vē. Emagin kālaya ithiri vana athara, niṣpādana hækiyāva da sælakiyā yuthu lesa ihaḷa yai.',
+  },
+  {
+    // ~35 words
+    si: 'පරිශීලකයාගේ අවශ්‍යතා අනුව සේවාව අභිරුචිකරණය කිරීම ඉතා වැදගත් වේ. එමඟින් හොඳ අත්දැකීමක් ලබා දීමට හැකි වන අතර, භාවිතය තවත් පහසු වේ.',
+    translit: 'Pariśīlakayāgē avaśyathā anuva sēvāva abhiruchikaraṇaya kirīma itā vædagath vē. Emagin hoṇḍa athdækīmaka labā dīmata hæki vana athara, bhāvithaya thawath pahasu vē.',
+  },
+  {
+    // ~34 words
+    si: 'කණ්ඩායම් ලෙස එක්ව වැඩ කිරීමෙන් අපට වැඩි සාර්ථකත්වයක් ලබා ගත හැකි වේ. එකිනෙකාගේ අදහස් ගෞරවයෙන් පිළිගැනීම මඟින් හොඳ ප්‍රතිඵල ලබා ගැනීමට හැකි වේ.',
+    translit: 'Kaṇḍāyam lesa ekva væḍa kirīmen apata væḍi sārthakathvayak labā gatha hæki vē. Ekinēkāgē adahas gauravayen piḷigæṇīma magin hoṇḍa prathiphala labā gæṇīmata hæki vē.',
+  },
+];
+
+// Track which sentences have been used in this enrollment session
+// to avoid repeating them for the same user
+let usedSentenceIndices = [];
+let currentSentenceIndex = -1;
+
+function getRandomSentence(excludeIndex = -1) {
+  // Build pool of unused sentences, excluding current one
+  let pool = SINHALA_SENTENCES
+    .map((_, i) => i)
+    .filter(i => !usedSentenceIndices.includes(i) && i !== excludeIndex);
+
+  // If all sentences are used, reset pool (keep current excluded)
+  if (pool.length === 0) {
+    usedSentenceIndices = excludeIndex >= 0 ? [excludeIndex] : [];
+    pool = SINHALA_SENTENCES
+      .map((_, i) => i)
+      .filter(i => i !== excludeIndex);
+  }
+
+  const idx = pool[Math.floor(Math.random() * pool.length)];
+  return idx;
+}
+
+function displaySentence(idx) {
+  currentSentenceIndex = idx;
+  const s = SINHALA_SENTENCES[idx];
+  document.getElementById('sinhalaSentence').textContent = s.si;
+  document.getElementById('sinhalaTranslit').textContent = s.translit;
+}
+
+function refreshSentence() {
+  if (isRecording || isProcessing) return;
+  const idx = getRandomSentence(currentSentenceIndex);
+  displaySentence(idx);
+}
+
+function loadNewSentenceForSample() {
+  // Mark current as used before loading new
+  if (currentSentenceIndex >= 0) {
+    usedSentenceIndices.push(currentSentenceIndex);
+  }
+  const idx = getRandomSentence(-1);
+  displaySentence(idx);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  COUNTDOWN TIMER
+// ═══════════════════════════════════════════════════════════════
+
+const MAX_RECORD_SECONDS = 15;
+const CIRCUMFERENCE = 2 * Math.PI * 28; // r=28 → 175.93
+let countdownInterval = null;
+let countdownSecondsLeft = MAX_RECORD_SECONDS;
+
+function startCountdown() {
+  countdownSecondsLeft = MAX_RECORD_SECONDS;
+  const ring = document.getElementById('countdownRingFill');
+  const numEl = document.getElementById('countdownNumber');
+  const labelEl = document.getElementById('countdownLabel');
+  const wrapper = document.getElementById('countdownWrapper');
+
+  ring.style.strokeDasharray = CIRCUMFERENCE;
+  ring.style.strokeDashoffset = '0';
+  ring.className = 'countdown-ring-fill';
+  numEl.className = 'countdown-number';
+  numEl.textContent = MAX_RECORD_SECONDS;
+  labelEl.textContent = 'seconds remaining';
+  wrapper.classList.remove('hidden');
+
+  countdownInterval = setInterval(() => {
+    countdownSecondsLeft--;
+    const fraction = countdownSecondsLeft / MAX_RECORD_SECONDS;
+    ring.style.strokeDashoffset = CIRCUMFERENCE * (1 - fraction);
+    numEl.textContent = countdownSecondsLeft;
+
+    if (countdownSecondsLeft <= 5) {
+      ring.className = 'countdown-ring-fill critical';
+      numEl.className = 'countdown-number critical';
+      labelEl.textContent = 'almost done!';
+    } else if (countdownSecondsLeft <= 8) {
+      ring.className = 'countdown-ring-fill urgent';
+      numEl.className = 'countdown-number urgent';
+    }
+
+    if (countdownSecondsLeft <= 0) {
+      stopCountdown();
+      if (isRecording) stopRecording();
+    }
+  }, 1000);
+}
+
+function stopCountdown() {
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+  document.getElementById('countdownWrapper').classList.add('hidden');
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  CONFIG & STATE
 // ═══════════════════════════════════════════════════════════════
@@ -1017,6 +1356,12 @@ function setEnrollingState() {
   $('notStartedArea').classList.add('hidden');
   $('enrollmentArea').classList.remove('hidden');
   $('micBtn').disabled = false;
+
+  // Load first sentence if none loaded yet
+  if (currentSentenceIndex === -1) {
+    loadNewSentenceForSample();
+  }
+
   updateProgressBars();
   updatePlaceOrderBtn();
 }
@@ -1060,6 +1405,8 @@ function updatePlaceOrderBtn() {
 
 async function handleStartEnrollment() {
   hideAlert('globalAlert');
+  usedSentenceIndices = [];
+  currentSentenceIndex = -1;
   try {
     const res = await api('POST', '/voice-auth/enrollment/start');
     enrollmentId = res.enrollment_id;
@@ -1118,15 +1465,26 @@ async function startRecording() {
   mediaRecorder.onstop = async () => {
     currentStream?.getTracks().forEach(t => t.stop());
     currentStream = null;
+    stopCountdown();
     await submitSample();
   };
 
   mediaRecorder.start();
   isRecording = true;
 
+  // Update mic button
   $('micBtn').className = 'mic-btn recording';
   $('micIcon').textContent = '⏹️';
   $('micLabel').innerHTML = '<span style="color: #ff3b30; font-weight: 600;">Recording — tap to stop</span>';
+
+  // Update prompt card appearance
+  $('sinhalaPromptCard').classList.add('recording-active');
+  $('sinhalaPromptLabel').textContent = '🎤 Read this sentence aloud now';
+  $('sinhalaPromptLabel').classList.add('recording-active');
+  $('sinhalaRefreshBtn').disabled = true;
+
+  // Start countdown timer
+  startCountdown();
 }
 
 function stopRecording() {
@@ -1134,6 +1492,12 @@ function stopRecording() {
     mediaRecorder.stop();
   }
   isRecording = false;
+  stopCountdown();
+
+  // Reset prompt card appearance
+  $('sinhalaPromptCard').classList.remove('recording-active');
+  $('sinhalaPromptLabel').textContent = '🇱🇰 Read this sentence aloud';
+  $('sinhalaPromptLabel').classList.remove('recording-active');
 }
 
 async function submitSample() {
@@ -1142,10 +1506,13 @@ async function submitSample() {
   $('micBtn').disabled = true;
   $('micIcon').innerHTML = '<span class="spinner"></span>';
   $('micLabel').innerHTML = '<span style="color: #0071e3;">Analyzing…</span>';
+  $('sinhalaRefreshBtn').disabled = true;
 
   const blob = new Blob(audioChunks, { type: 'audio/webm' });
   const formData = new FormData();
   formData.append('audio', blob, 'voice_sample.webm');
+  // Optionally send the prompt sentence for server-side validation
+  formData.append('prompt_sentence', SINHALA_SENTENCES[currentSentenceIndex]?.si || '');
 
   try {
     const res = await api('POST', `/voice-auth/enrollment/${enrollmentId}/sample`, formData, true);
@@ -1158,6 +1525,8 @@ async function submitSample() {
       setTimeout(() => setEnrolledState(enrolledSamples, requiredSamples), 800);
     } else {
       showAlert('enrollmentMessage', res.message || `Sample ${enrolledSamples}/${requiredSamples} accepted.`, 'success');
+      // Load a fresh sentence for the next sample
+      loadNewSentenceForSample();
     }
   } catch (e) {
     showAlert('enrollmentMessage', e.message, 'error');
@@ -1173,6 +1542,7 @@ async function submitSample() {
     $('micBtn').disabled = false;
     $('micIcon').textContent = '🎙️';
     $('micLabel').innerHTML = '<span style="color: #86868b;">Tap to start recording</span>';
+    $('sinhalaRefreshBtn').disabled = false;
   }
 }
 
@@ -1195,7 +1565,7 @@ async function handlePlaceOrder() {
     delivery_address: $('receiverAddress').value.trim(),
     package_weight: 0.35,
     package_type: 'Electronics',
-    description: 'Wireless Earbuds Pro X3',
+    description: 'iPhone 17 Pro Max',
     voice_verification_required: true,
   };
 
@@ -1207,7 +1577,7 @@ async function handlePlaceOrder() {
   } catch (e) {
     showAlert('globalAlert', 'Order failed: ' + e.message);
     btn.disabled = false;
-    btn.innerHTML = '🛒 Complete purchase';
+    btn.innerHTML = 'Complete purchase';
   }
 }
 </script>
