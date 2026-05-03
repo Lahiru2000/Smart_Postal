@@ -43,9 +43,9 @@ from typing import List, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # ── Configuration ───────────────────────────────────────────────────────────
-# Liveness score thresholds
-LIVENESS_PASS_THRESHOLD = 0.45      # Combined score must exceed this
-LIVENESS_STRICT_THRESHOLD = 0.60    # HIGH confidence liveness
+# Liveness score thresholds (stricter to reject phone screens / printed photos)
+LIVENESS_PASS_THRESHOLD = 0.55      # Combined score must exceed this
+LIVENESS_STRICT_THRESHOLD = 0.70    # HIGH confidence liveness
 
 # Individual check weights
 TEXTURE_WEIGHT = 0.25
@@ -53,6 +53,11 @@ COLOR_WEIGHT = 0.20
 MOTION_WEIGHT = 0.25
 FREQUENCY_WEIGHT = 0.15
 REFLECTION_WEIGHT = 0.15
+
+# All possible challenge types the system can issue
+ALL_CHALLENGE_TYPES = ["blink", "turn_left", "turn_right"]
+# How many challenges per verification (all 3 are always used, in random order)
+NUM_RANDOM_CHALLENGES = 3
 
 # Texture analysis (LBP)
 LBP_RADIUS = 1
@@ -435,11 +440,16 @@ def _analyze_reflection(face_region: np.ndarray) -> Tuple[float, Dict]:
 def _verify_client_challenges(liveness_data: Optional[Dict]) -> Tuple[float, Dict]:
     """
     Verify that the client-side liveness challenges were completed.
-    Checks blink detection, head turn, and challenge sequence consistency.
+
+    STRICT VALIDATION: The client sends which challenges were randomly
+    requested AND which were completed. ALL requested challenges must be
+    completed for a passing score. This prevents replay attacks since the
+    challenges are randomized each time.
     """
     if not liveness_data:
         return 0.0, {"error": "no liveness data provided", "score": 0.0}
 
+    requested_challenges = liveness_data.get("requested_challenges", [])
     challenges_completed = liveness_data.get("challenges_completed", [])
     blink_count = liveness_data.get("blink_count", 0)
     head_movements = liveness_data.get("head_movements", [])
@@ -449,53 +459,83 @@ def _verify_client_challenges(liveness_data: Optional[Dict]) -> Tuple[float, Dic
     score = 0.0
     details = {}
 
-    # Check blink detection
-    if blink_count >= 2:
-        score += 0.35
-        details["blink"] = "pass"
-    elif blink_count == 1:
-        score += 0.15
-        details["blink"] = "partial"
-    else:
-        details["blink"] = "fail"
+    # ── Validate requested challenges are legitimate ──────────────────────
+    if not requested_challenges or len(requested_challenges) < 2:
+        logger.warning("No valid requested challenges in liveness data")
+        return 0.0, {
+            "error": "no requested challenges",
+            "score": 0.0,
+            "all_challenges_passed": False,
+        }
 
-    # Check head movements
-    valid_movements = [m for m in head_movements if m in ("left", "right", "up", "down")]
-    if len(valid_movements) >= 2:
-        score += 0.35
-        details["head_turn"] = "pass"
-    elif len(valid_movements) == 1:
-        score += 0.15
-        details["head_turn"] = "partial"
-    else:
-        details["head_turn"] = "fail"
+    # Verify all requested challenge types are valid
+    valid_types = set(ALL_CHALLENGE_TYPES)
+    for ch in requested_challenges:
+        if ch not in valid_types:
+            logger.warning(f"Invalid challenge type in request: {ch}")
+            return 0.0, {
+                "error": f"invalid challenge type: {ch}",
+                "score": 0.0,
+                "all_challenges_passed": False,
+            }
 
-    # Check challenge sequence timing
+    # ── Check that ALL requested challenges were completed ────────────────
+    completed_set = set(challenges_completed)
+    requested_set = set(requested_challenges)
+    missing_challenges = requested_set - completed_set
+    all_passed = len(missing_challenges) == 0
+
+    if all_passed:
+        # Full marks for completing all requested challenges
+        score += 0.50
+        details["challenge_match"] = "pass"
+    else:
+        # Partial credit based on completion ratio
+        completion_ratio = len(requested_set - missing_challenges) / len(requested_set)
+        score += 0.10 * completion_ratio  # Very little partial credit
+        details["challenge_match"] = "fail"
+        details["missing_challenges"] = list(missing_challenges)
+        logger.warning(f"Missing challenges: {missing_challenges}")
+
+    # ── Validate specific challenge evidence ──────────────────────────────
+    # Blink challenge
+    if "blink" in requested_set:
+        if blink_count >= 1:
+            score += 0.10
+            details["blink"] = "pass"
+        else:
+            details["blink"] = "fail"
+
+    # Head movement challenges
+    valid_movements = [m for m in head_movements if m in ("left", "right")]
+    for direction_challenge in ["turn_left", "turn_right"]:
+        direction_map = {"turn_left": "left", "turn_right": "right"}
+        if direction_challenge in requested_set:
+            direction = direction_map[direction_challenge]
+            if direction in valid_movements:
+                score += 0.10
+                details[direction_challenge] = "pass"
+            else:
+                details[direction_challenge] = "fail"
+
+    # ── Timing check ──────────────────────────────────────────────────────
     # Challenges should take a reasonable amount of time (not instant = bot)
-    if total_duration > 3000 and total_duration < 60000:
-        score += 0.15
+    if total_duration > 3000 and total_duration < 90000:
+        score += 0.10
         details["timing"] = "pass"
-    elif total_duration > 1000:
-        score += 0.08
+    elif total_duration > 1500:
+        score += 0.05
         details["timing"] = "partial"
     else:
         details["timing"] = "fail"
-
-    # Check that multiple challenges were completed
-    if len(challenges_completed) >= 2:
-        score += 0.15
-        details["challenges"] = "pass"
-    elif len(challenges_completed) == 1:
-        score += 0.08
-        details["challenges"] = "partial"
-    else:
-        details["challenges"] = "fail"
 
     score = float(np.clip(score, 0.0, 1.0))
     details["score"] = round(score, 4)
     details["blink_count"] = blink_count
     details["head_movements"] = valid_movements
+    details["requested_challenges"] = requested_challenges
     details["challenges_completed"] = challenges_completed
+    details["all_challenges_passed"] = all_passed
     details["duration_ms"] = total_duration
 
     return score, details
@@ -542,10 +582,15 @@ def check_liveness(
     Main liveness detection function.
     Analyzes multiple frames for signs of presentation attacks.
 
+    SECURITY: Client-side challenges are MANDATORY. Without valid challenge
+    completion data, liveness always fails. This prevents photo and video
+    replay attacks since the challenges are randomized each session.
+
     Args:
         frames: List of BGR frames (numpy arrays) from the verification capture
-        liveness_data: Optional dict with client-side challenge results
-                      (blink_count, head_movements, challenges_completed, etc.)
+        liveness_data: Dict with client-side challenge results (REQUIRED)
+                      Must include: requested_challenges, challenges_completed,
+                      blink_count, head_movements, duration_ms
 
     Returns:
         Dict with:
@@ -564,8 +609,18 @@ def check_liveness(
             "reason": "No frames provided for liveness analysis",
         }
 
-    logger.info(f"Running liveness detection on {len(frames)} frames"
-                f"{' + client challenges' if liveness_data else ''}")
+    # ── MANDATORY: Client challenges must be provided ─────────────────────
+    if not liveness_data:
+        logger.warning("Liveness FAILED: no client challenge data provided")
+        return {
+            "is_live": False,
+            "liveness_score": 0.0,
+            "confidence": "LOW",
+            "checks": {},
+            "reason": "Liveness challenges were not completed. Please complete all challenges.",
+        }
+
+    logger.info(f"Running liveness detection on {len(frames)} frames + client challenges")
 
     # Extract face regions from frames
     face_regions = []
@@ -585,7 +640,7 @@ def check_liveness(
 
     logger.info(f"Detected {len(face_regions)} face regions from {len(frames)} frames")
 
-    # ── Run all checks ────────────────────────────────────────────────────
+    # ── Run server-side checks ────────────────────────────────────────────
 
     # 1. Texture analysis (average across face regions)
     texture_scores = []
@@ -634,32 +689,28 @@ def check_liveness(
     refl_details = refl_details_all[0] if refl_details_all else {}
     refl_details["avg_score"] = round(refl_score, 4)
 
-    # 6. Client challenge verification
+    # 6. Client challenge verification (MANDATORY)
     challenge_score, challenge_details = _verify_client_challenges(liveness_data)
+    all_challenges_passed = challenge_details.get("all_challenges_passed", False)
 
     # ── Combined score ────────────────────────────────────────────────────
-    # If client challenges are available, they get significant weight
-    if liveness_data:
-        # With client challenges: server checks 60%, client 40%
-        server_score = (
-            texture_score * TEXTURE_WEIGHT +
-            color_score * COLOR_WEIGHT +
-            motion_score * MOTION_WEIGHT +
-            freq_score * FREQUENCY_WEIGHT +
-            refl_score * REFLECTION_WEIGHT
-        )
-        combined_score = server_score * 0.60 + challenge_score * 0.40
-    else:
-        # No client challenges: server checks only
-        combined_score = (
-            texture_score * TEXTURE_WEIGHT +
-            color_score * COLOR_WEIGHT +
-            motion_score * MOTION_WEIGHT +
-            freq_score * FREQUENCY_WEIGHT +
-            refl_score * REFLECTION_WEIGHT
-        )
-
+    # Server checks 50% + Client challenges 50%
+    server_score = (
+        texture_score * TEXTURE_WEIGHT +
+        color_score * COLOR_WEIGHT +
+        motion_score * MOTION_WEIGHT +
+        freq_score * FREQUENCY_WEIGHT +
+        refl_score * REFLECTION_WEIGHT
+    )
+    combined_score = server_score * 0.50 + challenge_score * 0.50
     combined_score = float(np.clip(combined_score, 0.0, 1.0))
+
+    # ── HARD GATE: All requested challenges MUST be completed ─────────────
+    # Even if server-side checks pass, failing challenges = not live.
+    # This is the key defense against photo and video replay attacks.
+    if not all_challenges_passed:
+        combined_score = min(combined_score, 0.35)  # Cap below pass threshold
+        logger.warning("Liveness HARD GATE: not all challenges completed → capped score")
 
     # ── Verdict ───────────────────────────────────────────────────────────
     is_live = combined_score >= LIVENESS_PASS_THRESHOLD
@@ -677,23 +728,27 @@ def check_liveness(
         if confidence == "HIGH":
             reason += " with high confidence"
     else:
-        # Identify the weakest check
-        check_scores = {
-            "texture": texture_score,
-            "color": color_score,
-            "motion": motion_score,
-            "frequency": freq_score,
-            "reflection": refl_score,
-        }
-        weakest = min(check_scores, key=check_scores.get)
-        reason_map = {
-            "texture": "Image texture suggests a printed photo or screen display",
-            "color": "Skin color distribution appears unnatural (possible screen/print)",
-            "motion": "Insufficient natural facial movement detected (possible photo/static image)",
-            "frequency": "Screen moiré pattern or digital artifacts detected",
-            "reflection": "Specular highlight pattern suggests screen display",
-        }
-        reason = reason_map.get(weakest, "Liveness checks did not pass")
+        if not all_challenges_passed:
+            missing = challenge_details.get("missing_challenges", [])
+            reason = f"Liveness challenges not completed: {', '.join(missing) if missing else 'challenges failed'}"
+        else:
+            # Identify the weakest server-side check
+            check_scores = {
+                "texture": texture_score,
+                "color": color_score,
+                "motion": motion_score,
+                "frequency": freq_score,
+                "reflection": refl_score,
+            }
+            weakest = min(check_scores, key=check_scores.get)
+            reason_map = {
+                "texture": "Image texture suggests a printed photo or screen display",
+                "color": "Skin color distribution appears unnatural (possible screen/print)",
+                "motion": "Insufficient natural facial movement detected (possible photo/static image)",
+                "frequency": "Screen moiré pattern or digital artifacts detected",
+                "reflection": "Specular highlight pattern suggests screen display",
+            }
+            reason = reason_map.get(weakest, "Liveness checks did not pass")
 
     checks = {
         "texture": texture_details,
@@ -701,9 +756,8 @@ def check_liveness(
         "motion": motion_details,
         "frequency": freq_details,
         "reflection": refl_details,
+        "client_challenges": challenge_details,
     }
-    if liveness_data:
-        checks["client_challenges"] = challenge_details
 
     result = {
         "is_live": is_live,
@@ -715,11 +769,10 @@ def check_liveness(
 
     logger.info(
         f"Liveness result: live={is_live}, score={combined_score:.4f}, "
-        f"confidence={confidence}, "
+        f"confidence={confidence}, all_challenges={all_challenges_passed}, "
         f"texture={texture_score:.3f}, color={color_score:.3f}, "
         f"motion={motion_score:.3f}, freq={freq_score:.3f}, "
-        f"refl={refl_score:.3f}"
-        f"{f', challenges={challenge_score:.3f}' if liveness_data else ''}"
+        f"refl={refl_score:.3f}, challenges={challenge_score:.3f}"
     )
 
     return result
