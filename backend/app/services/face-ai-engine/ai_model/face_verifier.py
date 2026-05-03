@@ -32,10 +32,10 @@ MIN_FACE_CONFIDENCE = 0.70        # Minimum detection confidence (lower for webc
 # Sigmoid score mapping parameters
 # ArcFace cosine similarity ranges:
 #   Same person:      typically 0.45–0.85
-#   Different person: typically 0.00–0.25
-#   Decision boundary: ~0.32 cosine similarity
-SIGMOID_STEEPNESS = 15            # Higher = sharper decision boundary
-SIGMOID_MIDPOINT = 0.32           # Cosine similarity at 50% score
+#   Different person: typically 0.00–0.30 (can reach 0.35 for similar faces)
+#   Decision boundary: ~0.40 cosine similarity
+SIGMOID_STEEPNESS = 12            # Smoother curve for better discrimination
+SIGMOID_MIDPOINT = 0.40           # Raised from 0.32 — different people often score 0.25-0.35
 
 
 # ── Frame extraction ─────────────────────────────────────────────────────────

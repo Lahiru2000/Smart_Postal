@@ -51,42 +51,40 @@ SEGMENT_DURATION_SEC = 3.0        # Each segment duration
 SEGMENT_OVERLAP_SEC = 1.0         # Overlap between consecutive segments
 MAX_SEGMENTS = 10                 # Max segments to process per audio
 
-# ── Sigmoid score mapping parameters (STRICT CALIBRATION v3) ────────────────
-# These thresholds are tuned for SECURITY-CRITICAL identity verification.
-# It is better to reject a genuine speaker than accept an impostor.
+# ── Sigmoid score mapping parameters (BALANCED CALIBRATION v4) ──────────────
+# Calibrated for real-world cross-device, cross-codec speaker verification.
+# Accounts for browser WebM/Opus encoding, varying microphones, and
+# recording conditions while still rejecting different speakers.
 #
 # WavLM cosine similarity (cross-device, cross-codec):
-#   Verified same speaker:  typically 0.50–0.70
-#   Different speaker:      typically -0.10–0.45 (can be surprisingly high
-#                           when same language/phrase/environment)
-#   Ambiguous zone:         0.40–0.55
-#   Decision boundary:      ~0.52 cosine similarity
+#   Verified same speaker:  typically 0.40–0.70 (lower when cross-device/codec)
+#   Different speaker:      typically -0.10–0.35
+#   Ambiguous zone:         0.35–0.48
+#   Decision boundary:      ~0.45 cosine similarity
 WAVLM_SIGMOID_STEEPNESS = 8       # Flatter curve → better mid-range discrimination
-WAVLM_SIGMOID_MIDPOINT = 0.52     # Raised from 0.42 — stricter impostor rejection
-WAVLM_COSINE_FLOOR = 0.35         # Below this = hard cap at 10%
-WAVLM_COSINE_SOFT_FLOOR = 0.46    # Below this = heavy attenuation
+WAVLM_SIGMOID_MIDPOINT = 0.45     # Lowered from 0.52 — cross-device same-speaker often 0.40-0.55
+WAVLM_COSINE_FLOOR = 0.25         # Below this = hard cap at 10%
+WAVLM_COSINE_SOFT_FLOOR = 0.38    # Below this = attenuation zone
 
 # ECAPA-TDNN cosine similarity:
-#   Verified same speaker:  typically 0.60–0.90
-#   Different speaker:      typically -0.10–0.50 (can be high for same
-#                           language/phrase/acoustic conditions)
-#   Ambiguous zone:         0.45–0.62
-#   Decision boundary:      ~0.62 cosine similarity
+#   Verified same speaker:  typically 0.50–0.90 (lower when cross-device/codec)
+#   Different speaker:      typically -0.10–0.40
+#   Ambiguous zone:         0.40–0.55
+#   Decision boundary:      ~0.52 cosine similarity
 ECAPA_SIGMOID_STEEPNESS = 7       # Flatter curve for fine discrimination
-ECAPA_SIGMOID_MIDPOINT = 0.62     # Raised from 0.52 — much stricter
-ECAPA_COSINE_FLOOR = 0.38         # Below this = hard cap at 10%
-ECAPA_COSINE_SOFT_FLOOR = 0.54    # Below this = heavy attenuation
+ECAPA_SIGMOID_MIDPOINT = 0.52     # Lowered from 0.62 — cross-device same-speaker often 0.50-0.70
+ECAPA_COSINE_FLOOR = 0.28         # Below this = hard cap at 10%
+ECAPA_COSINE_SOFT_FLOOR = 0.45    # Below this = attenuation zone
 
 # Ensemble weights (ECAPA gets more weight — better speaker discrimination)
 WAVLM_WEIGHT = 0.35
 ECAPA_WEIGHT = 0.65
 
 # Both models must produce a mapped score above this for ensemble to pass
-MODEL_AGREEMENT_THRESHOLD = 0.45
+MODEL_AGREEMENT_THRESHOLD = 0.35
 
-# Maximum output score — prevents overconfident scores near 1.0
-# True same-speaker should max around 0.88; keeps scores realistic
-SCORE_COMPRESSION_MAX = 0.90
+# Maximum output score — allows high scores for clear same-speaker matches
+SCORE_COMPRESSION_MAX = 0.95
 
 # Audio quality thresholds
 MIN_RMS_ENERGY = 0.008            # Reject very quiet audio
@@ -584,22 +582,22 @@ def _sigmoid_score(
     Map cosine similarity to 0–1 score via calibrated sigmoid with floor checks.
 
     Floor logic:
-      - cos_sim < cosine_floor      → hard cap at 0.15 (definitely different)
-      - cos_sim < cosine_soft_floor  → attenuate score by 0.5× (ambiguous zone)
+      - cos_sim < cosine_floor      → hard cap at 0.12 (definitely different)
+      - cos_sim < cosine_soft_floor  → mild attenuation (ambiguous zone)
       - Score is compressed to prevent overconfident values near 1.0
     """
     # Hard floor — definitely different speaker
     if cos_sim < cosine_floor:
-        logger.info(f"Cosine {cos_sim:.4f} below hard floor {cosine_floor} → capped at 0.10")
-        return 0.10
+        logger.info(f"Cosine {cos_sim:.4f} below hard floor {cosine_floor} → capped at 0.12")
+        return 0.12
 
     raw_sigmoid = 1.0 / (1.0 + np.exp(-steepness * (cos_sim - midpoint)))
 
-    # Soft floor — ambiguous zone, strong attenuation
+    # Soft floor — ambiguous zone, mild attenuation
     if cos_sim < cosine_soft_floor:
-        # Linear ramp from 0.25 to 0.75 across the soft-floor range
+        # Linear ramp from 0.45 to 0.85 across the soft-floor range
         ramp = (cos_sim - cosine_floor) / max(cosine_soft_floor - cosine_floor, 1e-6)
-        attenuation = 0.25 + 0.50 * ramp
+        attenuation = 0.45 + 0.40 * ramp
         raw_sigmoid *= attenuation
         logger.info(f"Cosine {cos_sim:.4f} in soft-floor zone → attenuation={attenuation:.3f}")
 
@@ -647,59 +645,56 @@ def _ensemble_score(
         # ── Strict agreement checks ──────────────────────────────────────
         score_diff = abs(wavlm_score - ecapa_score)
 
-        if score_diff > 0.25:
-            # Strong disagreement — use the LOWER score with heavy penalty
+        if score_diff > 0.35:
+            # Strong disagreement — use the LOWER score with moderate penalty
             logger.warning(f"Strong model disagreement: WavLM={wavlm_score:.4f}, "
                           f"ECAPA={ecapa_score:.4f} (diff={score_diff:.4f})")
-            ensemble = min(wavlm_score, ecapa_score) * 0.65
-        elif score_diff > 0.15:
-            # Moderate disagreement — penalise proportionally
-            penalty = (score_diff - 0.15) * 1.2
-            ensemble *= (1.0 - min(penalty, 0.5))
+            ensemble = min(wavlm_score, ecapa_score) * 0.75
+        elif score_diff > 0.25:
+            # Moderate disagreement — mild penalty
+            penalty = (score_diff - 0.25) * 1.0
+            ensemble *= (1.0 - min(penalty, 0.3))
             logger.info(f"Model disagreement penalty: {penalty:.4f}")
 
         # Both models must individually exceed the agreement threshold
         if wavlm_score < MODEL_AGREEMENT_THRESHOLD or ecapa_score < MODEL_AGREEMENT_THRESHOLD:
             min_s = min(wavlm_score, ecapa_score)
-            ensemble = min(ensemble, min_s * 0.70)
+            ensemble = min(ensemble, min_s * 0.80)
             logger.info(f"Agreement gate: at least one model below {MODEL_AGREEMENT_THRESHOLD} "
                         f"→ capped at {ensemble:.4f}")
 
-        # Raw-cosine cross-check: if EITHER raw cosine is low, cap hard
+        # Raw-cosine cross-check: only cap when BOTH raw cosines are very low
         if wavlm_cos is not None and ecapa_cos is not None:
-            if wavlm_cos < WAVLM_COSINE_SOFT_FLOOR and ecapa_cos < ECAPA_COSINE_SOFT_FLOOR:
+            if wavlm_cos < WAVLM_COSINE_FLOOR and ecapa_cos < ECAPA_COSINE_FLOOR:
                 ensemble = min(ensemble, 0.22)
-                logger.info(f"Both raw cosines below soft floor → capped at 0.22")
-            elif wavlm_cos < WAVLM_COSINE_SOFT_FLOOR or ecapa_cos < ECAPA_COSINE_SOFT_FLOOR:
-                ensemble = min(ensemble, 0.40)
-                logger.info(f"One raw cosine below soft floor → capped at 0.40")
+                logger.info(f"Both raw cosines below hard floor → capped at 0.22")
 
-        # ── MFCC correlation: strong penalty for low, modest bonus for high ──
+        # ── MFCC correlation: mild penalty for very low, modest bonus for high ──
         if mfcc_corr is not None:
-            if mfcc_corr < 0.45:
-                # Very low spectral match → strong penalise
-                mfcc_penalty = 0.60
+            if mfcc_corr < 0.35:
+                # Very low spectral match → moderate penalise
+                mfcc_penalty = 0.75
                 ensemble *= mfcc_penalty
                 logger.info(f"MFCC very low ({mfcc_corr:.4f}) → penalty ×{mfcc_penalty}")
-            elif mfcc_corr < 0.65:
-                # Low-ish spectral match → moderate penalise
-                mfcc_penalty = 0.75 + 0.25 * ((mfcc_corr - 0.45) / 0.20)
+            elif mfcc_corr < 0.50:
+                # Low-ish spectral match → mild penalise
+                mfcc_penalty = 0.85 + 0.15 * ((mfcc_corr - 0.35) / 0.15)
                 ensemble *= mfcc_penalty
                 logger.info(f"MFCC low ({mfcc_corr:.4f}) → penalty ×{mfcc_penalty:.3f}")
-            elif mfcc_corr > 0.85:
+            elif mfcc_corr > 0.80:
                 # Very high spectral match → small bonus
-                mfcc_bonus = 1.03
+                mfcc_bonus = 1.05
                 ensemble = min(ensemble * mfcc_bonus, SCORE_COMPRESSION_MAX)
                 logger.info(f"MFCC high ({mfcc_corr:.4f}) → bonus ×{mfcc_bonus}")
 
         # ── Pitch (F0) cross-check ───────────────────────────────────────
         if pitch_sim is not None:
-            if pitch_sim < 0.50:
-                pitch_penalty = 0.70
+            if pitch_sim < 0.35:
+                pitch_penalty = 0.80
                 ensemble *= pitch_penalty
                 logger.info(f"Pitch mismatch ({pitch_sim:.4f}) → penalty ×{pitch_penalty}")
-            elif pitch_sim < 0.65:
-                pitch_penalty = 0.80 + 0.20 * ((pitch_sim - 0.50) / 0.15)
+            elif pitch_sim < 0.50:
+                pitch_penalty = 0.85 + 0.15 * ((pitch_sim - 0.35) / 0.15)
                 ensemble *= pitch_penalty
                 logger.info(f"Pitch low ({pitch_sim:.4f}) → penalty ×{pitch_penalty:.3f}")
 
@@ -916,9 +911,9 @@ def compare_voices(video1_path: str, video2_path: str) -> float:
         pitch_sim=pitch_sim,
     )
 
-    # Apply quality scaling (aggressive curve)
-    if min_quality < 0.75:
-        quality_factor = 0.50 + 0.50 * (min_quality / 0.75)
+    # Apply quality scaling (balanced curve — less aggressive)
+    if min_quality < 0.60:
+        quality_factor = 0.65 + 0.35 * (min_quality / 0.60)
         final_score *= quality_factor
         logger.info(f"Quality adjustment: factor={quality_factor:.3f}")
 
@@ -1001,8 +996,8 @@ def compare_voice_with_reference_audio(
         pitch_sim=pitch_sim,
     )
 
-    if min_quality < 0.75:
-        final_score *= 0.50 + 0.50 * (min_quality / 0.75)
+    if min_quality < 0.60:
+        final_score *= 0.65 + 0.35 * (min_quality / 0.60)
 
     logger.info(f"Voice (video→audio): final_score={final_score:.4f}")
     return round(float(np.clip(final_score, 0.0, SCORE_COMPRESSION_MAX)), 4)
@@ -1093,8 +1088,8 @@ def _compare_audio_arrays(audio1: np.ndarray, audio2: np.ndarray) -> float:
         pitch_sim=pitch_sim,
     )
 
-    if min_quality < 0.75:
-        quality_factor = 0.50 + 0.50 * (min_quality / 0.75)
+    if min_quality < 0.60:
+        quality_factor = 0.65 + 0.35 * (min_quality / 0.60)
         final_score *= quality_factor
 
     final_score = float(np.clip(final_score, 0.0, SCORE_COMPRESSION_MAX))

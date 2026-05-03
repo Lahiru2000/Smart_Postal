@@ -28,7 +28,7 @@ FACE_ONLY_THRESHOLD = 0.72
 # This prevents one strong modality from compensating a weak one.
 # Stricter gates for critical security applications.
 FACE_MIN_GATE = 0.50            # Face score must be at least this to match
-VOICE_MIN_GATE = 0.52           # Voice score must be at least this (strict)
+VOICE_MIN_GATE = 0.40           # Voice score must be at least this to match
 
 
 # ── Result type ───────────────────────────────────────────────────────────────

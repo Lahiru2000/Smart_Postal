@@ -4,7 +4,7 @@ import {
   Video, VideoOff, Upload, CheckCircle, XCircle, Clock,
   Camera, StopCircle, RotateCcw, Send, Package, User, AlertTriangle,
   ScanFace, Loader2, Mic, MicOff, Home, PackageX, CornerDownRight, Lock, Undo2,
-  Eye, ArrowLeft, ArrowRight, Shield
+  Eye, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, Shield
 } from 'lucide-react';
 import { getVerificationLinkPublic, submitVerificationVideo, submitVerificationScan, getVerificationResult, submitDeliveryPreference } from '../services/api';
 
@@ -40,18 +40,19 @@ const VerificationCapture = () => {
   const scanAudioChunksRef = useRef([]);
 
   // Liveness challenge state
-  const [livenessStage, setLivenessStage] = useState(''); // '' | 'loading' | 'ready' | 'blink' | 'turn_left' | 'turn_right' | 'done' | 'failed'
+  const [livenessStage, setLivenessStage] = useState(''); // '' | 'loading' | 'ready' | 'blink' | 'turn_left' | 'turn_right' | 'look_up' | 'look_down' | 'done' | 'failed'
   const [livenessMessage, setLivenessMessage] = useState('');
   const [blinkCount, setBlinkCount] = useState(0);
   const [headMovements, setHeadMovements] = useState([]);
   const [challengesCompleted, setChallengesCompleted] = useState([]);
+  const [requestedChallenges, setRequestedChallenges] = useState([]); // randomly selected each session
   const [livenessStartTime, setLivenessStartTime] = useState(null);
   const [faceDetected, setFaceDetected] = useState(false);
   const [livenessProgress, setLivenessProgress] = useState(0); // 0-100
   const faceApiLoadedRef = useRef(false);
   const livenessIntervalRef = useRef(null);
-  const blinkStateRef = useRef({ eyeOpen: true, blinkCount: 0 });
-  const headPoseRef = useRef({ yaw: 0, leftDetected: false, rightDetected: false });
+  const blinkStateRef = useRef({ eyeOpen: true, blinkCount: 0, earHistory: [] });
+  const headPoseRef = useRef({ yaw: 0, leftDetected: false, rightDetected: false, yawBaseline: null, yawSamples: [], leftConsecutive: 0, rightConsecutive: 0 });
   const livenessFramesRef = useRef([]);
   const canvasRef = useRef(null);
 
@@ -174,7 +175,7 @@ const VerificationCapture = () => {
       audioAnimRef.current = null;
     }
     if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current.close().catch(() => { });
       audioContextRef.current = null;
       analyserRef.current = null;
     }
@@ -391,10 +392,11 @@ const VerificationCapture = () => {
     setBlinkCount(0);
     setHeadMovements([]);
     setChallengesCompleted([]);
+    setRequestedChallenges([]);
     setFaceDetected(false);
     setLivenessProgress(0);
-    blinkStateRef.current = { eyeOpen: true, blinkCount: 0 };
-    headPoseRef.current = { yaw: 0, leftDetected: false, rightDetected: false };
+    blinkStateRef.current = { eyeOpen: true, blinkCount: 0, earHistory: [] };
+    headPoseRef.current = { yaw: 0, leftDetected: false, rightDetected: false, yawBaseline: null, yawSamples: [], leftConsecutive: 0, rightConsecutive: 0 };
     livenessFramesRef.current = [];
     if (livenessIntervalRef.current) {
       clearInterval(livenessIntervalRef.current);
@@ -458,7 +460,8 @@ const VerificationCapture = () => {
     const video = scanVideoRef.current;
     if (!faceapi || !video || video.videoWidth === 0) return;
 
-    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 });
+    // Higher input size (416 vs 320) for more accurate landmark placement
+    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.35 });
 
     const detection = await faceapi.detectSingleFace(video, options).withFaceLandmarks(true);
 
@@ -471,48 +474,87 @@ const VerificationCapture = () => {
     const landmarks = detection.landmarks;
     const positions = landmarks.positions;
 
-    // ── Blink detection ──────────────────────────────────
+    // ── Blink detection (hybrid: raw for close, smoothed for open) ──────
     if (stage === 'blink' && positions.length >= 48) {
-      // Left eye: points 36-41, Right eye: points 42-47
       const leftEye = [positions[36], positions[37], positions[38], positions[39], positions[40], positions[41]];
       const rightEye = [positions[42], positions[43], positions[44], positions[45], positions[46], positions[47]];
 
       const leftEAR = getEAR(leftEye);
       const rightEAR = getEAR(rightEye);
-      const avgEAR = (leftEAR + rightEAR) / 2;
+      const rawEAR = (leftEAR + rightEAR) / 2;
 
-      const BLINK_THRESHOLD = 0.22;
-      const isEyeClosed = avgEAR < BLINK_THRESHOLD;
+      // Keep history for smoothed open-eye confirmation
+      const history = blinkStateRef.current.earHistory;
+      history.push(rawEAR);
+      if (history.length > 3) history.shift();
+      const smoothedEAR = history.reduce((a, b) => a + b, 0) / history.length;
 
-      if (blinkStateRef.current.eyeOpen && isEyeClosed) {
-        // Eye was open, now closed → start of blink
+      // Use RAW EAR for detecting closure (catches quick blinks that
+      // smoothing would average out and miss entirely)
+      const CLOSE_THRESHOLD = 0.25;
+      // Use SMOOTHED EAR for confirming re-opening (prevents false re-triggers
+      // from noisy single-frame spikes)
+      const OPEN_THRESHOLD = 0.26;
+
+      if (blinkStateRef.current.eyeOpen && rawEAR < CLOSE_THRESHOLD) {
+        // Eye was open → raw EAR dropped below close threshold → blink started
         blinkStateRef.current.eyeOpen = false;
-      } else if (!blinkStateRef.current.eyeOpen && !isEyeClosed) {
-        // Eye was closed, now open → blink completed
+        console.log(`[Liveness] Eye closed detected, rawEAR: ${rawEAR.toFixed(3)}`);
+      } else if (!blinkStateRef.current.eyeOpen && smoothedEAR > OPEN_THRESHOLD) {
+        // Eye was closed → smoothed EAR confirms re-opening → blink completed
         blinkStateRef.current.eyeOpen = true;
         blinkStateRef.current.blinkCount += 1;
         setBlinkCount(blinkStateRef.current.blinkCount);
-        console.log(`[Liveness] Blink detected! Count: ${blinkStateRef.current.blinkCount}`);
+        console.log(`[Liveness] Blink detected! Count: ${blinkStateRef.current.blinkCount}, rawEAR: ${rawEAR.toFixed(3)}, smoothedEAR: ${smoothedEAR.toFixed(3)}`);
       }
     }
 
-    // ── Head turn detection ──────────────────────────────
+    // ── Head turn detection (left/right) with baseline calibration ────
     if ((stage === 'turn_left' || stage === 'turn_right') && positions.length >= 68) {
       const yaw = getHeadYaw(landmarks);
       headPoseRef.current.yaw = yaw;
 
-      if (stage === 'turn_left' && yaw > 0.25) {
-        if (!headPoseRef.current.leftDetected) {
+      // Calibrate baseline from first 5 frames (user's neutral head position)
+      if (headPoseRef.current.yawBaseline === null) {
+        headPoseRef.current.yawSamples.push(yaw);
+        if (headPoseRef.current.yawSamples.length >= 5) {
+          headPoseRef.current.yawBaseline = headPoseRef.current.yawSamples.reduce((a, b) => a + b, 0) / headPoseRef.current.yawSamples.length;
+          console.log(`[Liveness] Yaw baseline calibrated: ${headPoseRef.current.yawBaseline.toFixed(3)}`);
+        }
+        return; // Don't evaluate until baseline is set
+      }
+
+      const baseline = headPoseRef.current.yawBaseline;
+      const delta = yaw - baseline;
+
+      // Require BOTH: absolute yaw > 0.30 AND delta from baseline > 0.18
+      // This prevents false triggers from camera angle or facial asymmetry
+      const ABSOLUTE_THRESHOLD = 0.30;
+      const DELTA_THRESHOLD = 0.18;
+      const CONSECUTIVE_REQUIRED = 3;
+
+      if (stage === 'turn_left') {
+        if (yaw > ABSOLUTE_THRESHOLD && delta > DELTA_THRESHOLD) {
+          headPoseRef.current.leftConsecutive += 1;
+        } else {
+          headPoseRef.current.leftConsecutive = 0;
+        }
+        if (headPoseRef.current.leftConsecutive >= CONSECUTIVE_REQUIRED && !headPoseRef.current.leftDetected) {
           headPoseRef.current.leftDetected = true;
           setHeadMovements(prev => [...prev, 'left']);
-          console.log('[Liveness] Left head turn detected');
+          console.log(`[Liveness] Left head turn CONFIRMED, yaw: ${yaw.toFixed(3)}, delta: ${delta.toFixed(3)}, baseline: ${baseline.toFixed(3)}`);
         }
       }
-      if (stage === 'turn_right' && yaw < -0.25) {
-        if (!headPoseRef.current.rightDetected) {
+      if (stage === 'turn_right') {
+        if (yaw < -ABSOLUTE_THRESHOLD && delta < -DELTA_THRESHOLD) {
+          headPoseRef.current.rightConsecutive += 1;
+        } else {
+          headPoseRef.current.rightConsecutive = 0;
+        }
+        if (headPoseRef.current.rightConsecutive >= CONSECUTIVE_REQUIRED && !headPoseRef.current.rightDetected) {
           headPoseRef.current.rightDetected = true;
           setHeadMovements(prev => [...prev, 'right']);
-          console.log('[Liveness] Right head turn detected');
+          console.log(`[Liveness] Right head turn CONFIRMED, yaw: ${yaw.toFixed(3)}, delta: ${delta.toFixed(3)}, baseline: ${baseline.toFixed(3)}`);
         }
       }
     }
@@ -549,9 +591,22 @@ const VerificationCapture = () => {
       setLivenessStartTime(Date.now());
       setFaceDetected(false);
       setLivenessProgress(0);
-      blinkStateRef.current = { eyeOpen: true, blinkCount: 0 };
-      headPoseRef.current = { yaw: 0, leftDetected: false, rightDetected: false };
+      blinkStateRef.current = { eyeOpen: true, blinkCount: 0, earHistory: [] };
+      headPoseRef.current = { yaw: 0, leftDetected: false, rightDetected: false, yawBaseline: null, yawSamples: [], leftConsecutive: 0, rightConsecutive: 0 };
       livenessFramesRef.current = [];
+
+      // ── Use all 3 challenges in random order ──────────────────────
+      const allChallenges = ['blink', 'turn_left', 'turn_right'];
+      const selectedChallenges = [...allChallenges].sort(() => Math.random() - 0.5);
+      setRequestedChallenges(selectedChallenges);
+      console.log('[Liveness] Random challenges selected:', selectedChallenges);
+
+      // Challenge UI config — generous timeouts to avoid false failures
+      const challengeConfig = {
+        blink: { message: 'Please blink your eyes slowly and clearly', timeout: 15000 },
+        turn_left: { message: 'Please slowly turn your head to the LEFT', timeout: 12000 },
+        turn_right: { message: 'Please slowly turn your head to the RIGHT', timeout: 12000 },
+      };
 
       // Start audio recording
       scanAudioChunksRef.current = [];
@@ -602,104 +657,110 @@ const VerificationCapture = () => {
       await new Promise(resolve => setTimeout(resolve, 1500));
 
       if (faceApiLoaded) {
-        // ── STAGE 1: Blink Detection ──────────────────────
-        setLivenessStage('blink');
-        setLivenessMessage('Please blink your eyes naturally (2-3 times)');
-        setLivenessProgress(10);
+        // ── Run each randomly selected challenge sequentially ──────
+        const completedList = [];
+        let challengeFailed = false;
 
-        // Run detection loop for blink stage
-        await new Promise((resolve) => {
-          let elapsed = 0;
-          const interval = setInterval(async () => {
-            elapsed += 200;
-            await runLivenessDetection('blink');
+        for (let i = 0; i < selectedChallenges.length; i++) {
+          const challenge = selectedChallenges[i];
+          const config = challengeConfig[challenge];
+          const progressStart = Math.round((i / selectedChallenges.length) * 80) + 10;
+          const progressEnd = Math.round(((i + 1) / selectedChallenges.length) * 80) + 10;
 
-            if (blinkStateRef.current.blinkCount >= 2) {
-              clearInterval(interval);
-              setChallengesCompleted(prev => [...prev, 'blink']);
-              resolve();
-            }
-            if (elapsed > 10000) { // 10s timeout
-              clearInterval(interval);
-              resolve();
-            }
-          }, 200);
-          livenessIntervalRef.current = interval;
-        });
+          setLivenessStage(challenge);
+          setLivenessMessage(config.message);
+          setLivenessProgress(progressStart);
 
-        setLivenessProgress(40);
+          // Reset yaw baseline for each head turn challenge so it calibrates
+          // from the user's current head position, not a previous challenge's
+          if (challenge === 'turn_left' || challenge === 'turn_right') {
+            headPoseRef.current.yawBaseline = null;
+            headPoseRef.current.yawSamples = [];
+            headPoseRef.current.leftConsecutive = 0;
+            headPoseRef.current.rightConsecutive = 0;
+          }
 
-        // ── STAGE 2: Turn Head Left ──────────────────────
-        setLivenessStage('turn_left');
-        setLivenessMessage('Please slowly turn your head to the LEFT');
+          const passed = await new Promise((resolve) => {
+            let elapsed = 0;
+            // Faster polling (150ms) to catch quick blinks/movements
+            const interval = setInterval(async () => {
+              elapsed += 150;
+              await runLivenessDetection(challenge);
 
-        await new Promise((resolve) => {
-          let elapsed = 0;
-          const interval = setInterval(async () => {
-            elapsed += 200;
-            await runLivenessDetection('turn_left');
+              // Check if this specific challenge was completed
+              let completed = false;
+              if (challenge === 'blink') {
+                completed = blinkStateRef.current.blinkCount >= 1;
+              } else if (challenge === 'turn_left') {
+                completed = headPoseRef.current.leftDetected;
+              } else if (challenge === 'turn_right') {
+                completed = headPoseRef.current.rightDetected;
+              }
 
-            if (headPoseRef.current.leftDetected) {
-              clearInterval(interval);
-              setChallengesCompleted(prev => [...prev, 'turn_left']);
-              resolve();
-            }
-            if (elapsed > 8000) {
-              clearInterval(interval);
-              resolve();
-            }
-          }, 200);
-          livenessIntervalRef.current = interval;
-        });
+              if (completed) {
+                clearInterval(interval);
+                resolve(true);
+              }
+              if (elapsed > config.timeout) {
+                clearInterval(interval);
+                resolve(false); // FAILED — timed out
+              }
+            }, 150);
+            livenessIntervalRef.current = interval;
+          });
 
-        setLivenessProgress(70);
+          if (passed) {
+            completedList.push(challenge);
+            setChallengesCompleted(prev => [...prev, challenge]);
+            setLivenessProgress(progressEnd);
+            console.log(`[Liveness] Challenge PASSED: ${challenge}`);
+          } else {
+            // Challenge FAILED — stop immediately
+            challengeFailed = true;
+            console.log(`[Liveness] Challenge FAILED (timeout): ${challenge}`);
+            setLivenessStage('failed');
+            setLivenessMessage(`Challenge failed: ${config.message.split('(')[0].trim()}. Please try again.`);
+            setLivenessProgress(0);
+            break;
+          }
+        }
 
-        // ── STAGE 3: Turn Head Right ─────────────────────
-        setLivenessStage('turn_right');
-        setLivenessMessage('Now turn your head to the RIGHT');
-
-        await new Promise((resolve) => {
-          let elapsed = 0;
-          const interval = setInterval(async () => {
-            elapsed += 200;
-            await runLivenessDetection('turn_right');
-
-            if (headPoseRef.current.rightDetected) {
-              clearInterval(interval);
-              setChallengesCompleted(prev => [...prev, 'turn_right']);
-              resolve();
-            }
-            if (elapsed > 8000) {
-              clearInterval(interval);
-              resolve();
-            }
-          }, 200);
-          livenessIntervalRef.current = interval;
-        });
+        if (challengeFailed) {
+          // Wait a moment to show the failure message
+          await new Promise(resolve => setTimeout(resolve, 2500));
+          stopCamera();
+          // Stop audio recording
+          if (scanMediaRecorderRef.current && scanMediaRecorderRef.current.state !== 'inactive') {
+            scanMediaRecorderRef.current.stop();
+          }
+          setSubmitError('Liveness challenge not completed. A real person must complete all challenges. Please try again.');
+          setScanStatus('');
+          setLivenessStage('');
+          setMode('choose');
+          return;
+        }
 
         setLivenessProgress(90);
         setLivenessStage('done');
-        setLivenessMessage('Liveness check complete! Analyzing...');
+        setLivenessMessage('All challenges passed! Please say your full name clearly for voice verification...');
       } else {
-        // face-api not loaded — capture frames without client-side challenges
-        setLivenessMessage('Capturing for server-side verification...');
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        // Capture frames for server-side analysis
-        const video = scanVideoRef.current;
-        if (video && video.videoWidth > 0) {
-          for (let i = 0; i < 8; i++) {
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext('2d').drawImage(video, 0, 0);
-            livenessFramesRef.current.push(canvas.toDataURL('image/jpeg', 0.9));
-            await new Promise(r => setTimeout(r, 400));
-          }
+        // face-api not loaded — CANNOT proceed without client-side challenges
+        setLivenessMessage('Liveness detection could not load. Please refresh and try again.');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        stopCamera();
+        if (scanMediaRecorderRef.current && scanMediaRecorderRef.current.state !== 'inactive') {
+          scanMediaRecorderRef.current.stop();
         }
+        setSubmitError('Liveness detection models failed to load. Please refresh the page and try again.');
+        setScanStatus('');
+        setLivenessStage('');
+        setMode('choose');
+        return;
       }
 
-      // Wait extra time for voice recording
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Wait extra time for voice recording — 5 seconds for clear capture
+      setLivenessMessage('🎤 Recording your voice... Please say your full name clearly.');
+      await new Promise(resolve => setTimeout(resolve, 10000));
 
       // Stop audio recording
       let audioBlob = null;
@@ -728,18 +789,20 @@ const VerificationCapture = () => {
         return;
       }
 
-      // Build liveness data for server
+      // Build liveness data for server — includes REQUESTED + COMPLETED challenges
+      const completedChallengesList = [];
+      if (blinkStateRef.current.blinkCount >= 1) completedChallengesList.push('blink');
+      if (headPoseRef.current.leftDetected) completedChallengesList.push('turn_left');
+      if (headPoseRef.current.rightDetected) completedChallengesList.push('turn_right');
+
       const livenessPayload = {
+        requested_challenges: selectedChallenges,
         blink_count: blinkStateRef.current.blinkCount,
         head_movements: [
           ...(headPoseRef.current.leftDetected ? ['left'] : []),
           ...(headPoseRef.current.rightDetected ? ['right'] : []),
         ],
-        challenges_completed: [
-          ...(blinkStateRef.current.blinkCount >= 2 ? ['blink'] : []),
-          ...(headPoseRef.current.leftDetected ? ['turn_left'] : []),
-          ...(headPoseRef.current.rightDetected ? ['turn_right'] : []),
-        ],
+        challenges_completed: completedChallengesList,
         challenge_timestamps: [],
         duration_ms: Date.now() - (livenessStartTime || Date.now()),
       };
@@ -848,11 +911,10 @@ const VerificationCapture = () => {
                 <div className="bg-green-500/5 border border-green-500/20 rounded-xl p-4">
                   <div className="flex items-center justify-between">
                     <span className="text-green-400 text-sm font-semibold">{aiResult.verdict}</span>
-                    <span className={`text-xs font-bold px-2 py-1 rounded-full ${
-                      aiResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                    <span className={`text-xs font-bold px-2 py-1 rounded-full ${aiResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
                       aiResult.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
-                      'bg-red-500/20 text-red-400'
-                    }`}>{aiResult.confidence}</span>
+                        'bg-red-500/20 text-red-400'
+                      }`}>{aiResult.confidence}</span>
                   </div>
                   <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
                     {aiResult.face_available && <span>Face: <span className="text-white font-bold">{(aiResult.face_score * 100).toFixed(1)}%</span></span>}
@@ -966,8 +1028,8 @@ const VerificationCapture = () => {
               </div>
 
               <p className="text-gray-400 text-sm leading-relaxed">
-                Identity verification did not match. For your security, this order has been 
-                <span className="text-red-400 font-bold"> automatically reversed</span>. 
+                Identity verification did not match. For your security, this order has been
+                <span className="text-red-400 font-bold"> automatically reversed</span>.
                 No delivery will be attempted.
               </p>
 
@@ -1170,9 +1232,8 @@ const VerificationCapture = () => {
                       {[0.15, 0.3, 0.45, 0.6, 0.8].map((threshold, i) => (
                         <div
                           key={i}
-                          className={`w-1 rounded-full transition-all duration-100 ${
-                            audioLevel > threshold ? 'bg-green-400' : 'bg-gray-600'
-                          }`}
+                          className={`w-1 rounded-full transition-all duration-100 ${audioLevel > threshold ? 'bg-green-400' : 'bg-gray-600'
+                            }`}
                           style={{ height: `${(i + 1) * 20}%` }}
                         />
                       ))}
@@ -1286,8 +1347,9 @@ const VerificationCapture = () => {
                     {(() => {
                       const bracketColor = !faceDetected ? 'border-red-400' :
                         livenessStage === 'done' ? 'border-green-400' :
-                        livenessStage === 'blink' || livenessStage === 'turn_left' || livenessStage === 'turn_right' ? 'border-[#FFC000]' :
-                        'border-green-400';
+                          livenessStage === 'failed' ? 'border-red-400' :
+                            ['blink', 'turn_left', 'turn_right', 'look_up', 'look_down'].includes(livenessStage) ? 'border-[#FFC000]' :
+                              'border-green-400';
                       return (
                         <>
                           <div className={`absolute top-6 left-6 w-14 h-14 border-t-2 border-l-2 ${bracketColor} rounded-tl-lg transition-colors duration-300`} />
@@ -1301,15 +1363,14 @@ const VerificationCapture = () => {
                     {/* Scanning line animation */}
                     {(scanStatus === 'liveness' || scanStatus === 'scanning') && (
                       <div className="absolute left-8 right-8 h-0.5 bg-gradient-to-r from-transparent via-[#FFC000] to-transparent"
-                           style={{ animation: 'scan 2s ease-in-out infinite' }} />
+                        style={{ animation: 'scan 2s ease-in-out infinite' }} />
                     )}
                   </div>
 
                   {/* Face detection indicator */}
                   {scanStatus === 'liveness' && (
-                    <div className={`absolute top-4 left-4 flex items-center gap-1.5 px-3 py-1.5 rounded-full ${
-                      faceDetected ? 'bg-green-500/20 border border-green-500/30' : 'bg-red-500/20 border border-red-500/30'
-                    }`}>
+                    <div className={`absolute top-4 left-4 flex items-center gap-1.5 px-3 py-1.5 rounded-full ${faceDetected ? 'bg-green-500/20 border border-green-500/30' : 'bg-red-500/20 border border-red-500/30'
+                      }`}>
                       <div className={`w-2 h-2 rounded-full ${faceDetected ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`} />
                       <span className={`text-xs font-medium ${faceDetected ? 'text-green-400' : 'text-red-400'}`}>
                         {faceDetected ? 'Face detected' : 'No face detected'}
@@ -1331,23 +1392,28 @@ const VerificationCapture = () => {
                       <div className="bg-black/80 backdrop-blur-sm rounded-xl border border-[#333333] p-3 space-y-2">
                         {/* Challenge icon + message */}
                         <div className="flex items-center gap-3">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
-                            livenessStage === 'blink' ? 'bg-blue-500/20 border border-blue-500/30' :
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${livenessStage === 'blink' ? 'bg-blue-500/20 border border-blue-500/30' :
                             livenessStage === 'turn_left' ? 'bg-[#FFC000]/20 border border-[#FFC000]/30' :
-                            livenessStage === 'turn_right' ? 'bg-purple-500/20 border border-purple-500/30' :
-                            livenessStage === 'done' ? 'bg-green-500/20 border border-green-500/30' :
-                            'bg-gray-500/20 border border-gray-500/30'
-                          }`}>
+                              livenessStage === 'turn_right' ? 'bg-purple-500/20 border border-purple-500/30' :
+                                livenessStage === 'look_up' ? 'bg-cyan-500/20 border border-cyan-500/30' :
+                                  livenessStage === 'look_down' ? 'bg-orange-500/20 border border-orange-500/30' :
+                                    livenessStage === 'done' ? 'bg-green-500/20 border border-green-500/30' :
+                                      livenessStage === 'failed' ? 'bg-red-500/20 border border-red-500/30' :
+                                        'bg-gray-500/20 border border-gray-500/30'
+                            }`}>
                             {livenessStage === 'blink' && <Eye className="w-5 h-5 text-blue-400" />}
                             {livenessStage === 'turn_left' && <ArrowLeft className="w-5 h-5 text-[#FFC000]" />}
                             {livenessStage === 'turn_right' && <ArrowRight className="w-5 h-5 text-purple-400" />}
+                            {livenessStage === 'look_up' && <ArrowUp className="w-5 h-5 text-cyan-400" />}
+                            {livenessStage === 'look_down' && <ArrowDown className="w-5 h-5 text-orange-400" />}
                             {livenessStage === 'done' && <CheckCircle className="w-5 h-5 text-green-400" />}
+                            {livenessStage === 'failed' && <XCircle className="w-5 h-5 text-red-400" />}
                             {livenessStage === 'ready' && <Shield className="w-5 h-5 text-gray-400" />}
                           </div>
                           <div className="flex-1">
                             <p className="text-white text-sm font-medium">{livenessMessage}</p>
                             {livenessStage === 'blink' && (
-                              <p className="text-gray-400 text-xs mt-0.5">Blinks detected: {blinkCount}/2</p>
+                              <p className="text-gray-400 text-xs mt-0.5">Blinks detected: {blinkCount}/1</p>
                             )}
                           </div>
                         </div>
@@ -1355,25 +1421,33 @@ const VerificationCapture = () => {
                         {/* Progress bar */}
                         <div className="w-full bg-[#333333] rounded-full h-1.5">
                           <div className="h-1.5 rounded-full bg-gradient-to-r from-[#FFC000] to-green-400 transition-all duration-500"
-                               style={{ width: `${livenessProgress}%` }} />
+                            style={{ width: `${livenessProgress}%` }} />
                         </div>
 
-                        {/* Challenge steps */}
-                        <div className="flex items-center justify-center gap-3 pt-1">
-                          <div className={`flex items-center gap-1 text-xs ${blinkStateRef.current?.blinkCount >= 2 || challengesCompleted.includes('blink') ? 'text-green-400' : livenessStage === 'blink' ? 'text-blue-400' : 'text-gray-600'}`}>
-                            {(blinkStateRef.current?.blinkCount >= 2 || challengesCompleted.includes('blink')) ? <CheckCircle className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                            Blink
-                          </div>
-                          <div className="text-gray-600 text-xs">→</div>
-                          <div className={`flex items-center gap-1 text-xs ${headPoseRef.current?.leftDetected || challengesCompleted.includes('turn_left') ? 'text-green-400' : livenessStage === 'turn_left' ? 'text-[#FFC000]' : 'text-gray-600'}`}>
-                            {(headPoseRef.current?.leftDetected || challengesCompleted.includes('turn_left')) ? <CheckCircle className="w-3 h-3" /> : <ArrowLeft className="w-3 h-3" />}
-                            Left
-                          </div>
-                          <div className="text-gray-600 text-xs">→</div>
-                          <div className={`flex items-center gap-1 text-xs ${headPoseRef.current?.rightDetected || challengesCompleted.includes('turn_right') ? 'text-green-400' : livenessStage === 'turn_right' ? 'text-purple-400' : 'text-gray-600'}`}>
-                            {(headPoseRef.current?.rightDetected || challengesCompleted.includes('turn_right')) ? <CheckCircle className="w-3 h-3" /> : <ArrowRight className="w-3 h-3" />}
-                            Right
-                          </div>
+                        {/* Dynamic challenge steps — only shows the randomly selected ones */}
+                        <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
+                          {requestedChallenges.map((ch, idx) => {
+                            const isCompleted = challengesCompleted.includes(ch);
+                            const isActive = livenessStage === ch;
+                            const labels = { blink: 'Blink', turn_left: 'Left', turn_right: 'Right', look_up: 'Up', look_down: 'Down' };
+                            const icons = {
+                              blink: isCompleted ? <CheckCircle className="w-3 h-3" /> : <Eye className="w-3 h-3" />,
+                              turn_left: isCompleted ? <CheckCircle className="w-3 h-3" /> : <ArrowLeft className="w-3 h-3" />,
+                              turn_right: isCompleted ? <CheckCircle className="w-3 h-3" /> : <ArrowRight className="w-3 h-3" />,
+                              look_up: isCompleted ? <CheckCircle className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />,
+                              look_down: isCompleted ? <CheckCircle className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />,
+                            };
+                            const color = isCompleted ? 'text-green-400' : isActive ? 'text-[#FFC000]' : 'text-gray-600';
+                            return (
+                              <React.Fragment key={ch}>
+                                {idx > 0 && <div className="text-gray-600 text-xs">→</div>}
+                                <div className={`flex items-center gap-1 text-xs ${color}`}>
+                                  {icons[ch]}
+                                  {labels[ch]}
+                                </div>
+                              </React.Fragment>
+                            );
+                          })}
                         </div>
                       </div>
                     </div>
@@ -1408,7 +1482,7 @@ const VerificationCapture = () => {
                       <div>
                         <p className="text-white text-sm font-medium">Anti-Spoofing Liveness Check</p>
                         <p className="text-gray-500 text-xs mt-1">
-                          Follow the on-screen prompts to prove you're a real person. 
+                          Follow the on-screen prompts to prove you're a real person.
                           Speak your <strong>full name</strong> clearly during the process.
                         </p>
                       </div>
@@ -1416,10 +1490,10 @@ const VerificationCapture = () => {
                   </div>
                 )}
 
-                <button onClick={() => { 
+                <button onClick={() => {
                   if (livenessIntervalRef.current) clearInterval(livenessIntervalRef.current);
-                  stopCamera(); 
-                  handleRetake(); 
+                  stopCamera();
+                  handleRetake();
                 }}
                   className="w-full px-5 py-3 bg-[#1A1A1A] text-gray-400 border border-[#333333] font-bold rounded-xl hover:bg-[#252525] transition-colors">
                   Cancel
@@ -1441,11 +1515,10 @@ const VerificationCapture = () => {
                             <CheckCircle className="w-5 h-5 text-green-400" />
                             <span className="text-green-400 font-bold">{scanResult.verdict}</span>
                           </div>
-                          <span className={`text-xs font-bold px-2 py-1 rounded-full ${
-                            scanResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
+                          <span className={`text-xs font-bold px-2 py-1 rounded-full ${scanResult.confidence === 'HIGH' ? 'bg-green-500/20 text-green-400' :
                             scanResult.confidence === 'MEDIUM' ? 'bg-yellow-500/20 text-yellow-400' :
-                            'bg-red-500/20 text-red-400'
-                          }`}>{scanResult.confidence}</span>
+                              'bg-red-500/20 text-red-400'
+                            }`}>{scanResult.confidence}</span>
                         </div>
                         <div className="flex items-center gap-3 text-xs text-gray-500">
                           <span>Face: <span className="text-white font-bold">{scanResult.face_score}%</span></span>
@@ -1538,7 +1611,7 @@ const VerificationCapture = () => {
                       <PackageX className="w-10 h-10 text-red-400 mx-auto" />
                       <h2 className="text-white text-xl font-bold">Order Reversed</h2>
                       <p className="text-gray-400 text-sm">
-                        Identity verification did not match. This order has been 
+                        Identity verification did not match. This order has been
                         <span className="text-red-400 font-bold"> automatically reversed</span>.
                       </p>
                       <div className="flex items-center justify-center gap-3 text-xs text-gray-500 pt-2">
