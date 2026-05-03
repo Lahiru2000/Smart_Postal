@@ -1,3 +1,5 @@
+ 
+
 """CourierBot: Sinhala voice assistant for Smart Postal courier service.
 
 Adapted for the group project setup:
@@ -113,7 +115,7 @@ SYSTEM_PROMPT = (
     "\n4. Error Responses:"
     "\n   • දිග වැරදි: 'මට සමා වෙන්න, එම අංකයේ අඩුවක් තිබෙන බව පෙනෙනවා. ශ්‍රී ලංකාවේ දුරකථන අංකයක අංක දහයක් තිබිය යුතුයි. කරුණාකර නැවත පැහැදිලිව කියන්න.'"
     "\n   • වැරදි prefix: 'මට සමා වෙන්න, එම අංකය නිවැරදි දුරකථන අංකයක් ලෙස හඳුනාගැනීමට අපහසුයි. කරුණාකර බිංදුව අංකයෙන් ආරම්භ කර නැවත කියන්න.'"
-    "\n   • tool error: 'කණගාටුයි, එය වලංගු අංකයක් නොවේ. බිංදුව හතක් ආකාරයට ආරම්භ වන අංක දහයක් කියන්න.'"
+    "\n   • tool error: 'කණගාටුයි, එය වලංගු අංකයක් නොවේ. බිංදුව හත ආකාරයට ආරම්භ වන අංක දහයක් කියන්න.'"
     "\n   • tool success: 'ලියාපදිංචි සබැඳිය ඔබේ WhatsApp එකට යැව්වා!'"
     "\n\n═══ දෝෂ / අවසානය ═══"
     "\n• නොතේරුණොත්: 'මට එය පැහැදිලිව ඇසුණේ නැහැ. කරුණාකර නැවත කියන්න.'"
@@ -134,13 +136,13 @@ DEFAULT_MIN_TRANSCRIPT_CHARS = 2
 # Sinhala status translations
 STATUS_SINHALA = {
     "pending": "බලාපොරොත්තුවෙන්",
-    "received": "භාරගත්",
+    "received": "භාරගෙන ඇත",
     "in transit": "ප්‍රවාහනයේ",
     "out for delivery": "බෙදාහැරීමට පිටත්ව ඇත",
     "delivered": "බෙදාහරින ලදී",
     "not_received": "භාරගෙන නැත",
     "customer_not_answered": "පාරිභෝගිකයා ප්‍රතිචාර දැක්වූයේ නැත",
-    "return_requested": "ආපසු ඉල්ලීමක් ඇත",
+    "return_requested": "ආපසු හරවා යැවීමට ඉල්ලීමක් ඇත",
     "returned_to_sender": "යවන්නාට ආපසු යවන ලදී",
 }
 
@@ -233,28 +235,29 @@ SINHALA_NUMBERS = {
 def _normalize_tracking_id(raw_id: str) -> str:
     """Normalize a tracking ID, handling Sinhala numbers and various formats.
 
-    Always produces the canonical format TRK-XXXX (with dash).
-    Accepts: TRK-1001, TRK1001, TRK 1001, trk1001, Sinhala number words, etc.
+    Always produces the canonical format TRK-XXXXXXXX (uppercase, with dash).
+    Accepts: TRK-A1B2C3D4, TRK-1001, TRK1001, TRK 1001, trk1001, Sinhala number words, etc.
     """
+    # First replace any Sinhala spoken digit-words with their ASCII digit equivalents
     cleaned = raw_id.lower()
     for word, digit in SINHALA_NUMBERS.items():
-        cleaned = cleaned.replace(word, digit)
+        cleaned = cleaned.replace(word.lower(), digit)
 
-    # Remove all spaces and dashes, uppercase
+    # Strip spaces and dashes, then uppercase
     normalized = cleaned.upper().replace(" ", "").replace("-", "")
 
-    # Extract the numeric part after TRK
+    # Extract the part after TRK and reconstruct with a dash
     if normalized.startswith("TRK"):
-        num_part = normalized[3:]
-        # Always produce TRK-{digits} format
-        if num_part.isdigit():
-            return f"TRK-{num_part}"
-        # Alphanumeric part (e.g. TRK-A1B2C3D4) — keep with dash
-        return f"TRK-{num_part}"
-    elif normalized.isdigit():
+        remainder = normalized[3:]   # Everything after "TRK" (digits or alphanumeric UUID)
+        if remainder:                 # e.g. "1001" or "A1B2C3D4"
+            return f"TRK-{remainder}"
+        return "TRK-"               # Pathological case — just keep it
+
+    # Bare numeric input — assume it is the suffix of the tracking ID
+    if normalized.isdigit():
         return f"TRK-{normalized}"
 
-    # Fallback — return as-is uppercased
+    # Fallback — return as-is uppercased (covers UUIDs without prefix, etc.)
     return normalized
 
 
@@ -263,57 +266,80 @@ def _normalize_tracking_id(raw_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _get_tracking_from_db(tracking_id: str) -> Optional[Dict[str, Any]]:
-    """Query the real Shipment table via SQLAlchemy. Returns None on failure."""
+    """Query the real Shipment table and return every column value as-is.
+    
+    No default values are substituted here — NULL DB values stay as None
+    so the formatter can decide whether to show them.
+    """
+    import traceback
+    logger.info("[TRACKING] DB lookup starting for: '%s'", tracking_id)
     try:
         from app.database import SessionLocal
         from app.models.user import User  # noqa: F401 - relationship resolution
         from app.models.voice_auth import VoiceEnrollment, VoiceProfile, VoiceVerification  # noqa: F401
         from app.models.shipment import Shipment
+        from sqlalchemy import func
 
         db = SessionLocal()
         try:
             shipment = (
                 db.query(Shipment)
-                .filter(Shipment.tracking_number == tracking_id)
+                .filter(func.upper(Shipment.tracking_number) == tracking_id.upper())
                 .first()
             )
             if not shipment:
+                logger.info("[TRACKING] No shipment found for: '%s'", tracking_id)
                 return None
-            # Build rich payload with Sinhala-friendly fields
-            status_en = shipment.status or "Unknown"
+
+            logger.info("[TRACKING] Found shipment: %s | status=%s", shipment.tracking_number, shipment.status)
+
+            # Map every column in the Shipment table exactly as stored.
+            # NULL values are kept as None — nothing is fabricated here.
             payload: Dict[str, Any] = {
-                "tracking_id": shipment.tracking_number,
-                "status": status_en,
-                "status_sinhala": _translate_status(status_en),
-                "sender_name": shipment.sender_name or "නොදනී",
-                "sender_phone": shipment.sender_phone or "නොදනී",
-                "receiver": shipment.receiver_name or "නොදනී",
-                "receiver_phone": shipment.receiver_phone or "නොදනී",
-                "pickup_address": shipment.pickup_address or "නොදනී",
-                "delivery_address": shipment.delivery_address or "නොදනී",
-                "package_weight_kg": shipment.package_weight,
-                "package_type": shipment.package_type or "Standard",
-                "description": shipment.description or "විස්තරයක් නැත",
-                "package_location": getattr(shipment, 'package_location', None) or "නොදනී",
-                "payment_status": getattr(shipment, 'payment_status', None) or "නොදනී",
-                "not_answered_count": getattr(shipment, 'not_answered_count', 0) or 0,
-                "created_date": _format_date_sinhala(shipment.created_at),
-                "last_update": _format_date_sinhala(
-                    getattr(shipment, 'updated_at', None) or shipment.created_at
-                ),
+                # Identifiers
+                "tracking_number":            shipment.tracking_number,
+                "status":                     shipment.status,
+                "status_sinhala":             _translate_status(shipment.status or ""),
+                # Sender (from DB columns)
+                "sender_name":                shipment.sender_name,
+                "sender_phone":               shipment.sender_phone,
+                "pickup_address":             shipment.pickup_address,
+                # Receiver (from DB columns)
+                "receiver_name":              shipment.receiver_name,
+                "receiver_phone":             shipment.receiver_phone,
+                "delivery_address":           shipment.delivery_address,
+                # Package (from DB columns)
+                "package_weight":             shipment.package_weight,
+                "package_type":               shipment.package_type,
+                "description":                shipment.description,
+                # Tracking state (from DB columns)
+                "package_location":           shipment.package_location,
+                "payment_status":             shipment.payment_status,
+                "not_answered_count":         shipment.not_answered_count,
+                "estimated_delivery":         shipment.estimated_delivery,
+                # Voice verification (from DB columns)
+                "voice_verification_required": shipment.voice_verification_required,
+                "voice_verification_status":   shipment.voice_verification_status,
+                # Timestamps (from DB columns)
+                "created_at":                 shipment.created_at,
+                "updated_at":                 shipment.updated_at,
             }
-            if shipment.estimated_delivery:
-                payload["estimated_delivery"] = _format_date_sinhala(shipment.estimated_delivery)
+
+            # Courier name via relationship (only if assigned)
             if shipment.courier_id:
-                from app.models.user import User
                 courier = db.query(User).filter(User.id == shipment.courier_id).first()
-                if courier:
-                    payload["rider"] = courier.full_name
+                payload["courier_name"] = courier.full_name if courier else None
+            else:
+                payload["courier_name"] = None
+
             return payload
         finally:
             db.close()
     except Exception as exc:
-        logger.warning("DB lookup failed for %s: %s. Falling back to mock.", tracking_id, exc)
+        logger.error(
+            "[TRACKING] DB lookup FAILED for '%s': %s\n%s",
+            tracking_id, exc, traceback.format_exc()
+        )
         return None
 
 
@@ -324,6 +350,7 @@ def _get_tracking_from_db(tracking_id: str) -> Optional[Dict[str, Any]]:
 def get_tracking_status(tracking_id: str) -> Dict[str, Any]:
     """Return parcel status for a given tracking ID from the database."""
     normalized_id = _normalize_tracking_id(tracking_id)
+    logger.info("[TRACKING] get_tracking_status called | raw='%s' | normalized='%s'", tracking_id, normalized_id)
 
     db_result = _get_tracking_from_db(normalized_id)
     if db_result is not None:
@@ -513,8 +540,8 @@ def create_chat_session(init_data: Dict[str, Any], history=None) -> Any:
     config = genai_types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
         tools=init_data["tools"],
-        temperature=0.3,
-        max_output_tokens=50,
+        temperature=0,  # Zero temperature: reduces hallucination in Gemini responses
+        max_output_tokens=300,  # Increased: 50 was too low to fit a full Sinhala tracking response
         safety_settings=[
             genai_types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
             genai_types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
@@ -592,8 +619,109 @@ def extract_function_call(response: Any) -> Optional[tuple[str, Dict[str, Any]]]
     return None
 
 
+def _format_tracking_response_sinhala(result: Dict[str, Any]) -> str:
+    """Build Sinhala response using ONLY the exact values from the DB payload.
+
+    - NULL / empty DB fields are omitted from the response (not substituted).
+    - Nothing is added, guessed, or fabricated.
+    """
+    if not result or not result.get("tracking_number"):
+        return (
+            "කණගාටුයි, එම අංකයට අදාළ පාර්සලයක් සොයාගැනීමට නොහැකි වුණා. "
+            "කරුණාකර අංකය නැවත පරීක්ෂා කරන්න."
+        )
+
+    def field(value) -> bool:
+        """True if the DB value is non-null and non-empty."""
+        return value is not None and str(value).strip() != ""
+
+    parts = []
+
+    # --- Tracking number & status (always present if record exists) ---
+    parts.append(f"අංකය: {result['tracking_number']}")
+
+    if field(result.get("status")):
+        # Show Sinhala translation if available, else raw English status
+        sinhala = result.get("status_sinhala", "")
+        status_display = sinhala if field(sinhala) and sinhala != result.get("status") else result["status"]
+        parts.append(f"තත්ත්වය: {status_display}")
+
+    # --- Location ---
+    if field(result.get("package_location")):
+        parts.append(f"පාර්සලය පිහිටා: {result['package_location']}")
+
+    # --- Estimated delivery ---
+    if field(result.get("estimated_delivery")):
+        parts.append(f"බෙදාහැරීමේ ෭ස්තමේන්තු දිනය: {_format_date_sinhala(result['estimated_delivery'])}")
+
+    # --- Receiver ---
+    if field(result.get("receiver_name")):
+        receiver_line = f"ලබන්නා: {result['receiver_name']}"
+        if field(result.get("receiver_phone")):
+            receiver_line += f" ({result['receiver_phone']})"
+        parts.append(receiver_line)
+
+    if field(result.get("delivery_address")):
+        parts.append(f"ලිපිනය: {result['delivery_address']}")
+
+    # --- Package details ---
+    if field(result.get("package_weight")):
+        parts.append(f"බර: කිලෝ {result['package_weight']}")
+
+    if field(result.get("package_type")):
+        parts.append(f"වර්ගය: {result['package_type']}")
+
+    if field(result.get("description")):
+        parts.append(f"විස්තරය: {result['description']}")
+
+    # --- Payment ---
+    if field(result.get("payment_status")):
+        parts.append(f"ගෙවීම: {result['payment_status']}")
+
+    # --- Failed delivery attempts ---
+    not_answered = result.get("not_answered_count")
+    if not_answered and int(not_answered) > 0:
+        parts.append(f"ලබන්නා හමු නොවූ අවස්ථා: {not_answered}")
+
+    # --- Sender ---
+    if field(result.get("sender_name")):
+        sender_line = f"යවන්නා: {result['sender_name']}"
+        if field(result.get("sender_phone")):
+            sender_line += f" ({result['sender_phone']})"
+        parts.append(sender_line)
+
+    if field(result.get("pickup_address")):
+        parts.append(f"යවන් ලිපිනය: {result['pickup_address']}")
+
+    # --- Courier ---
+    if field(result.get("courier_name")):
+        parts.append(f"කුරියර්: {result['courier_name']}")
+
+    # --- Voice verification ---
+    if result.get("voice_verification_required"):
+        vv_status = result.get("voice_verification_status")
+        if field(vv_status):
+            parts.append(f"හඩ තහවුරුකිරීමේ තත්ත්වය: {vv_status}")
+        else:
+            parts.append("හඩ තහවුරුකිරීම අවශ්‍ය වෙනවා")
+
+    # --- Timestamps ---
+    if result.get("created_at"):
+        parts.append(f"කරූසුම් දිනය: {_format_date_sinhala(result['created_at'])}")
+
+    if result.get("updated_at"):
+        parts.append(f"අවසන් වඉදියෝත් දිනය: {_format_date_sinhala(result['updated_at'])}")
+
+    return " | ".join(parts)
+
+
 def handle_model_turn(init_data: Dict[str, Any], chat: Any, user_text: str) -> Tuple[str, Any]:
-    """Send user input to Gemini and resolve any tool calls."""
+    """Send user input to Gemini and resolve any tool calls.
+
+    For get_tracking_status: the response is formatted directly in Python
+    from the DB payload so Gemini cannot hallucinate any field values.
+    For other tools: Gemini generates the natural-language reply as usual.
+    """
     enforce_request_cooldown()
     response = chat.send_message(user_text)
 
@@ -607,6 +735,25 @@ def handle_model_turn(init_data: Dict[str, Any], chat: Any, user_text: str) -> T
             result = execute_function_call(fn_name, fn_args)
         except Exception as exc:
             result = {"error": str(exc)}
+
+        # ── Tracking lookup: format response in Python, bypass Gemini ──────────
+        # This prevents Gemini from fabricating field values that are NULL in DB.
+        if fn_name == "get_tracking_status":
+            logger.info("[TRACKING] Formatting response from DB payload directly.")
+            formatted = _format_tracking_response_sinhala(result)
+            # Still send the tool result back so chat history stays consistent,
+            # but we return our own formatted text — not Gemini's.
+            enforce_request_cooldown()
+            chat.send_message(
+                genai_types.Part.from_function_response(
+                    name=fn_name,
+                    response=result,
+                )
+            )
+            updated_chat = trim_chat_history(init_data, chat)
+            return formatted, updated_chat
+
+        # ── All other tools: let Gemini generate the reply ───────────────────
         enforce_request_cooldown()
         response = chat.send_message(
             genai_types.Part.from_function_response(

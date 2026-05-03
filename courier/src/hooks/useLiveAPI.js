@@ -13,12 +13,83 @@ export function useLiveAPI() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState(null);
+  const [notification, setNotification] = useState(null);
+
+  const clearNotification = useCallback(() => setNotification(null), []);
+
+  const confirmPhoneNumber = useCallback(async (phoneInput) => {
+    try {
+      let phone = (phoneInput || '').replace(/[^0-9]/g, '');
+      if (phone.startsWith('94') && phone.length === 11) {
+        phone = '0' + phone.slice(2);
+      }
+      const isValid = /^0\d{9}$/.test(phone);
+      
+      if (!isValid) {
+        alert('කරුණාකර නිවැරදි දුරකථන අංකයක් ඇතුළත් කරන්න (07X XXXXXXX).');
+        return;
+      }
+
+      const regUrl = `${window.location.origin}/register`;
+      const waText = encodeURIComponent(
+        `Smart Postal ලියාපදිංචි වීමට මෙම සබැඳිය භාවිතා කරන්න: ${regUrl}`
+      );
+      const intlPhone = '94' + phone.slice(1);
+      const waLink = `https://wa.me/${intlPhone}?text=${waText}`;
+
+      setNotification({
+        type: 'registration_link',
+        phone,
+        registrationUrl: regUrl,
+        whatsappLink: waLink,
+        timestamp: Date.now(),
+      });
+
+      if (sessionRef.current && connectedRef.current) {
+        const session = await sessionRef.current;
+        session.sendToolResponse({
+          functionResponses: [{
+            id: notification?.toolCallId || activeToolCallIdRef.current || 'manual',
+            name: 'send_registration_link',
+            response: {
+              success: true,
+              result: "success",
+              message: `Registration link has been successfully generated and sent to WhatsApp for ${phone}. The user does not need to confirm anything else. Please tell the user: ලියාපදිංචි සබැඳිය ඔබේ WhatsApp එකට යැව්වා!`,
+              registration_url: regUrl,
+              whatsapp_link: waLink,
+            }
+          }]
+        });
+      }
+    } catch (e) {
+      console.error('Phone confirmation error:', e);
+    }
+  }, [notification]);
+
+  const cancelPhoneConfirmation = useCallback(async () => {
+    clearNotification();
+    if (sessionRef.current && connectedRef.current) {
+      const session = await sessionRef.current;
+      session.sendToolResponse({
+        functionResponses: [{
+          id: notification?.toolCallId || activeToolCallIdRef.current || 'manual',
+          name: 'send_registration_link',
+          response: {
+            success: false,
+            error: 'user_cancelled',
+            message: 'User indicated the phone number was wrong. Please ask for the number again.'
+          }
+        }]
+      });
+    }
+  }, [clearNotification, notification]);
 
   const sessionRef = useRef(null);
   const recorderRef = useRef(null);
   const playerRef = useRef(null);
   const speakingTimerRef = useRef(null);
   const connectedRef = useRef(false);
+  const activeToolCallIdRef = useRef(null);
 
   const disconnect = useCallback(() => {
     connectedRef.current = false;
@@ -42,7 +113,10 @@ export function useLiveAPI() {
     setError(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ 
+        apiKey,
+        httpOptions: { apiVersion: 'v1alpha' }
+      });
       playerRef.current = new AudioPlayer();
 
       const sessionPromise = ai.live.connect({
@@ -96,6 +170,20 @@ export function useLiveAPI() {
                       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(call.args),
                     });
                     data = await res.json();
+                  } else if (call.name === 'send_registration_link') {
+                    let phone = (call.args.phone_number || '').replace(/[^0-9]/g, '');
+                    if (phone.startsWith('94') && phone.length === 11) {
+                      phone = '0' + phone.slice(2);
+                    }
+                    activeToolCallIdRef.current = call.id;
+                    setNotification({
+                      type: 'confirm_phone',
+                      phone: phone,
+                      toolCallId: call.id,
+                      timestamp: Date.now(),
+                    });
+                    
+                    continue; 
                   } else {
                     data = { error: `Unknown function: ${call.name}` };
                   }
@@ -111,7 +199,19 @@ export function useLiveAPI() {
             }
           },
           onerror: (err) => { console.error('Live API error:', err); setError(err.message || 'An error occurred'); disconnect(); },
-          onclose: (e) => { console.warn('Live API closed:', e?.reason ?? e); disconnect(); },
+          onclose: (e) => { 
+            console.warn('Live API closed:', e?.reason ?? e); 
+            if (connectedRef.current) { 
+              console.log('Attempting to reconnect...');
+              setIsConnecting(true);
+              setIsConnected(false);
+              setTimeout(() => {
+                if (connectedRef.current) connect(); 
+              }, 1000);
+            } else {
+              disconnect();
+            }
+          },
         },
         config: {
           responseModalities: ['AUDIO'],
@@ -158,6 +258,7 @@ export function useLiveAPI() {
                 { name: 'get_tracking_status', description: 'Lookup a Smart Postal tracking ID and return its latest status', parameters: { type: 'OBJECT', properties: { tracking_id: { type: 'STRING', description: 'Tracking number in format TRK-XXXX (e.g. TRK-1001). Always include the dash.' } }, required: ['tracking_id'] } },
                 { name: 'calculate_shipping_rate', description: 'Calculate parcel shipping cost in LKR. First 1kg = Rs.400, each additional kg = Rs.100. Remote = +Rs.150.', parameters: { type: 'OBJECT', properties: { origin_city: { type: 'STRING', description: 'Pickup city' }, destination_city: { type: 'STRING', description: 'Drop-off city' }, weight_kg: { type: 'NUMBER', description: 'Weight in kg' } }, required: ['origin_city', 'destination_city', 'weight_kg'] } },
                 { name: 'reschedule_delivery', description: 'Reschedule a delivery date (YYYY-MM-DD). Cannot be past or >30 days.', parameters: { type: 'OBJECT', properties: { tracking_id: { type: 'STRING', description: 'Tracking number' }, new_date: { type: 'STRING', description: 'New date (YYYY-MM-DD)' } }, required: ['tracking_id', 'new_date'] } },
+                { name: 'send_registration_link', description: 'Send a Smart Postal registration link via WhatsApp to a Sri Lankan mobile number. The phone number MUST be exactly 10 digits starting with 07. Call this only after the user provides their phone number.', parameters: { type: 'OBJECT', properties: { phone_number: { type: 'STRING', description: 'Exactly 10-digit Sri Lankan mobile number starting with 07 (e.g. 0771234567). No spaces or dashes.' } }, required: ['phone_number'] } },
               ],
             },
           ],
@@ -173,5 +274,5 @@ export function useLiveAPI() {
   }, [disconnect]);
 
   const status = error ? `Error: ${error}` : isConnecting ? 'Connecting...' : isConnected ? 'Connected – speak now!' : '';
-  return { isConnected, isConnecting, isSpeaking, error, connect, disconnect, status };
+  return { isConnected, isConnecting, isSpeaking, error, connect, disconnect, status, notification, clearNotification, confirmPhoneNumber, cancelPhoneConfirmation };
 }

@@ -7,7 +7,7 @@
  *
  * Converted from TypeScript to JSX to match group project conventions.
  */
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { AudioRecorder, AudioPlayer } from '../lib/audio';
 
@@ -22,13 +22,85 @@ export function useLiveAPI() {
 
   const clearNotification = useCallback(() => setNotification(null), []);
 
+  const confirmPhoneNumber = useCallback(async (phoneInput) => {
+    try {
+      let phone = (phoneInput || '').replace(/[^0-9]/g, '');
+      if (phone.startsWith('94') && phone.length === 11) {
+        phone = '0' + phone.slice(2);
+      }
+      const isValid = /^0\d{9}$/.test(phone);
+      
+      if (!isValid) {
+        alert('කරුණාකර නිවැරදි දුරකථන අංකයක් ඇතුළත් කරන්න (07X XXXXXXX).');
+        return;
+      }
+
+      const regUrl = `${window.location.origin}/register`;
+      const waText = encodeURIComponent(
+        `Smart Postal ලියාපදිංචි වීමට මෙම සබැඳිය භාවිතා කරන්න: ${regUrl}`
+      );
+      const intlPhone = '94' + phone.slice(1);
+      const waLink = `https://wa.me/${intlPhone}?text=${waText}`;
+
+      setNotification({
+        type: 'registration_link',
+        phone,
+        registrationUrl: regUrl,
+        whatsappLink: waLink,
+        timestamp: Date.now(),
+      });
+
+      if (sessionRef.current && connectedRef.current) {
+        const session = await sessionRef.current;
+        session.sendToolResponse({
+          functionResponses: [{
+            id: notification?.toolCallId || activeToolCallIdRef.current || 'manual',
+            name: 'send_registration_link',
+            response: {
+              success: true,
+              result: "success",
+              message: `Registration link has been successfully generated and sent to WhatsApp for ${phone}. The user does not need to confirm anything else. Please tell the user: ලියාපදිංචි සබැඳිය ඔබේ WhatsApp එකට යැව්වා!`,
+              registration_url: regUrl,
+              whatsapp_link: waLink,
+            }
+          }]
+        });
+      }
+    } catch (e) {
+      console.error('Phone confirmation error:', e);
+    }
+  }, [notification]);
+
+  const cancelPhoneConfirmation = useCallback(async () => {
+    clearNotification();
+    if (sessionRef.current && connectedRef.current) {
+      const session = await sessionRef.current;
+      session.sendToolResponse({
+        functionResponses: [{
+          id: notification?.toolCallId || activeToolCallIdRef.current || 'manual',
+          name: 'send_registration_link',
+          response: {
+            success: false,
+            error: 'user_cancelled',
+            message: 'User indicated the phone number was wrong. Please ask for the number again.'
+          }
+        }]
+      });
+    }
+  }, [clearNotification, notification]);
+
+  /** @type {import('react').MutableRefObject<Promise<any> | null>} */
   const sessionRef = useRef(null);
   const recorderRef = useRef(null);
   const playerRef = useRef(null);
   const speakingTimerRef = useRef(null);
   const connectedRef = useRef(false);
+  /** @type {import('react').MutableRefObject<(() => void) | null>} */
+  const connectRef = useRef(null);
+  const activeToolCallIdRef = useRef(null);
 
   const disconnect = useCallback(() => {
+    // eslint-disable-next-line react-hooks/immutability
     connectedRef.current = false;
     if (recorderRef.current) {
       recorderRef.current.stop();
@@ -38,10 +110,9 @@ export function useLiveAPI() {
       playerRef.current.stop();
       playerRef.current = null;
     }
-    if (sessionRef.current) {
-      sessionRef.current.then((s) => s.close()).catch(() => {});
-      sessionRef.current = null;
-    }
+    sessionRef.current?.then?.((s) => s.close()).catch(() => { });
+    // eslint-disable-next-line react-hooks/immutability
+    sessionRef.current = null;
     if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current);
     setIsConnected(false);
     setIsConnecting(false);
@@ -59,24 +130,36 @@ export function useLiveAPI() {
     setError(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ 
+        apiKey,
+        httpOptions: { apiVersion: 'v1alpha' }
+      });
       playerRef.current = new AudioPlayer();
 
+      let socketActive = false;
+
       const sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        model: 'gemini-3.1-flash-live-preview',
         callbacks: {
           onopen: () => {
             setIsConnected(true);
             setIsConnecting(false);
             connectedRef.current = true;
+            socketActive = true;
 
             recorderRef.current = new AudioRecorder((base64) => {
-              if (!connectedRef.current) return;
-              sessionPromise.then((session) =>
-                session.sendRealtimeInput({
-                  media: { data: base64, mimeType: 'audio/pcm;rate=16000' },
-                })
-              ).catch(() => {});
+              if (!connectedRef.current || !recorderRef.current || !socketActive) return;
+              sessionPromise.then((session) => {
+                try {
+                  session.sendRealtimeInput({
+                    audio: { data: base64, mimeType: 'audio/pcm;rate=16000' },
+                  });
+                } catch (err) {
+                  if (!err.message?.includes('CLOSING') && !err.message?.includes('CLOSED')) {
+                    console.error('Audio send warning:', err);
+                  }
+                }
+              }).catch(() => { });
             });
             recorderRef.current.start();
           },
@@ -135,36 +218,16 @@ export function useLiveAPI() {
                     if (phone.startsWith('94') && phone.length === 11) {
                       phone = '0' + phone.slice(2);
                     }
-                    // Validate: must be 10 digits starting with 0
-                    const isValid = /^0\d{9}$/.test(phone);
-                    if (!isValid) {
-                      data = {
-                        success: false,
-                        error: 'invalid_phone',
-                        message: `"${call.args.phone_number}" is not a valid Sri Lankan mobile number. Must be 10 digits starting with 07 (e.g. 0771234567).`,
-                      };
-                    } else {
-                      const regUrl = `${window.location.origin}/register`;
-                      const waText = encodeURIComponent(
-                        `Smart Postal ලියාපදිංචි වීමට මෙම සබැඳිය භාවිතා කරන්න: ${regUrl}`
-                      );
-                      const intlPhone = '94' + phone.slice(1);
-                      const waLink = `https://wa.me/${intlPhone}?text=${waText}`;
-                      console.log('[SmartPostal] Registration link toast triggered:', { phone, waLink });
-                      setNotification({
-                        type: 'registration_link',
-                        phone,
-                        registrationUrl: regUrl,
-                        whatsappLink: waLink,
-                        timestamp: Date.now(),
-                      });
-                      data = {
-                        success: true,
-                        message: `Registration link sent to ${phone} via WhatsApp`,
-                        registration_url: regUrl,
-                        whatsapp_link: waLink,
-                      };
-                    }
+                    // Trigger the confirmation UI instead of immediately responding
+                    activeToolCallIdRef.current = call.id;
+                    setNotification({
+                      type: 'confirm_phone',
+                      phone: phone,
+                      toolCallId: call.id,
+                      timestamp: Date.now(),
+                    });
+                    
+                    continue; 
                   } else {
                     data = { error: `Unknown function: ${call.name}` };
                   }
@@ -182,13 +245,40 @@ export function useLiveAPI() {
 
           onerror: (err) => {
             console.error('Live API error:', err);
+            socketActive = false;
             setError(err.message || 'An error occurred');
             disconnect();
           },
 
           onclose: (e) => {
+            socketActive = false;
             console.warn('Live API closed:', e?.reason ?? e);
-            disconnect();
+            
+            // Immediately stop the microphone so it doesn't queue more audio to the dying socket
+            if (recorderRef.current) {
+              recorderRef.current.stop();
+              recorderRef.current = null;
+            }
+            if (playerRef.current) {
+              playerRef.current.stop();
+              playerRef.current = null;
+            }
+            if (speakingTimerRef.current) {
+              clearTimeout(speakingTimerRef.current);
+            }
+            setIsSpeaking(false);
+            
+            // If the user didn't intentionally click disconnect, auto-reconnect
+            if (connectedRef.current) { 
+              console.log('Attempting to reconnect...');
+              setIsConnecting(true);
+              setIsConnected(false);
+              setTimeout(() => {
+                if (connectedRef.current) connectRef.current?.();
+              }, 1000); // 1-second delay to prevent spamming the server
+            } else {
+              disconnect();
+            }
           },
         },
 
@@ -346,7 +436,8 @@ export function useLiveAPI() {
         },
       });
 
-      sessionRef.current = sessionPromise;
+      // eslint-disable-next-line react-hooks/immutability
+      sessionRef.current = Promise.resolve(sessionPromise);
     } catch (err) {
       console.error('Connection failed:', err);
       setError(err.message || 'Failed to connect');
@@ -362,5 +453,9 @@ export function useLiveAPI() {
         ? 'Connected – speak now!'
         : '';
 
-  return { isConnected, isConnecting, isSpeaking, error, connect, disconnect, status, notification, clearNotification };
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
+
+  return { isConnected, isConnecting, isSpeaking, error, connect, disconnect, status, notification, clearNotification, confirmPhoneNumber, cancelPhoneConfirmation };
 }
