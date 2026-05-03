@@ -1672,17 +1672,17 @@ const RouteOptimizer = () => {
           navigator.geolocation.getCurrentPosition(resolve, reject);
         });
         capturedStartPoint = {
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-          name: "Your Location",
+          lat: 6.928267529202233,
+          lng: 79.85787776054688,
+          name: "Start Point",
         };
         setStartPoint(capturedStartPoint);
       } catch (error) {
         console.warn("Could not get start location:", error);
         capturedStartPoint = {
-          lat: routeResults.optimizedRoute[0].lat,
-          lng: routeResults.optimizedRoute[0].lng,
-          name: "Start Point",
+          lat: 6.928267529202233,
+          lng: 79.85787776054688,
+          name: "Sri Lanka Post Headquarters, 10 McCallum Rd, Colombo 001000, Sri Lanka",
         };
         setStartPoint(capturedStartPoint);
       }
